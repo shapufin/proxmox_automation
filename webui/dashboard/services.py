@@ -101,21 +101,18 @@ def file_choice_items(files: Iterable[Path]) -> list[tuple[str, str]]:
 def execute_job(job: MigrationJob) -> MigrationJob:
     config_path = resolve_config_profile_path(job.config_profile)
     engine = MigrationEngine(AppConfig.load(config_path), logger=logging.getLogger("webui.migration"))
-    config = engine.config
     vm_name = job.vm_name.strip()
     storage = job.storage or None
     bridge = job.bridge or None
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None
 
     if job.mode == MigrationMode.LOCAL:
-        manifest_path = resolve_stage_path(job.manifest_path)
+        manifest_path = resolve_stage_path(job.manifest_path) if job.manifest_path else Path("")
         disk_paths = [resolve_stage_path(path) for path in job.source_paths]
-        manifest_vm = engine.load_local_manifest(manifest_path)
-        source_paths = engine.resolve_local_disk_paths(disk_paths, manifest_vm)
-        result = engine.migrate_local_disks(
+        result = engine.migrate_local_disks_or_archive(
             vm_name=vm_name,
             manifest_path=manifest_path,
-            disk_paths=source_paths,
+            disk_paths=disk_paths,
             storage=storage,
             bridge=bridge,
             disk_format=disk_format,

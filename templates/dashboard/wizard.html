@@ -212,6 +212,7 @@
           <tr><td style="color:var(--muted);padding:4px 0">Storage</td><td id="sum_storage">—</td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Bridge</td><td id="sum_bridge">—</td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Disk format</td><td id="sum_fmt">—</td></tr>
+          <tr id="sum_hw_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware (VMX)</td><td id="sum_hw"></td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Dry run</td><td id="sum_dry"><span class="badge badge-warning">Yes</span></td></tr>
         </table>
       </div>
@@ -305,14 +306,20 @@ function onModeChange(val) {
   document.getElementById('src-local').style.display  = val === 'local'  ? 'block' : 'none';
 }
 
-/* ── Pre-fill VM name from URL param ── */
+/* ── Pre-fill from URL params ── */
 (function() {
-  const vm = new URLSearchParams(location.search).get('vm');
+  const params = new URLSearchParams(location.search);
+  const vm  = params.get('vm');
+  const dir = params.get('dir');
   if (vm) {
     document.getElementById('wz_mode').value = 'vmware';
     onModeChange('vmware');
     state.vm_name = vm;
     state.mode = 'vmware';
+  }
+  if (dir) {
+    document.getElementById('wz_dir').value = dir;
+    syncField('directory', dir);
   }
 })();
 
@@ -368,6 +375,17 @@ function updateSummary() {
   setText('sum_storage', state.storage || '—');
   setText('sum_bridge',  state.bridge  || '—');
   setText('sum_fmt',     state.disk_format || 'Auto (qcow2)');
+  // VMX hardware hints row
+  const hwCell = document.getElementById('sum_hw');
+  const hwTr   = document.getElementById('sum_hw_row');
+  if (hwCell && hwTr) {
+    if (state._vmxMemoryMb) {
+      hwCell.textContent = `${state._vmxMemoryMb} MB RAM · ${state._vmxCpuCount} vCPU · ${(state._vmxFirmware||'bios').toUpperCase()} · ${state._vmxGuestOs||''}`;
+      hwTr.style.display = '';
+    } else {
+      hwTr.style.display = 'none';
+    }
+  }
   const dryEl = document.getElementById('sum_dry');
   if (dryEl) dryEl.innerHTML = state.dry_run
     ? '<span class="badge badge-warning">Yes — safe simulation</span>'
@@ -484,38 +502,93 @@ async function scanVmdks() {
     const r = await fetch('/api/vmdk-scan/?path=' + encodeURIComponent(path));
     const d = await r.json();
     if (!d.ok) { box.innerHTML = `<div class="message error">Scan failed: ${esc(d.error)}</div>`; return; }
+
+    // ── Auto-fill manifest ──
     if (d.manifest_path) {
       document.getElementById('wz_manifest').value = d.manifest_path;
       syncField('manifest_path', d.manifest_path);
     }
-    if (!d.vmdks.length) {
-      box.innerHTML = `<div class="message warning">No .vmdk files found in <code>${esc(d.path)}</code>.</div>`;
+
+    // ── Auto-fill hardware from .vmx ──
+    if (d.vmx_specs && d.vmx_specs.name) {
+      applyVmxSpecs(d.vmx_specs);
+    }
+
+    const totalItems = d.vmdks.length + (d.archives || []).length;
+    if (!totalItems) {
+      box.innerHTML = `<div class="message warning">No .vmdk files or archives found in <code>${esc(d.path)}</code>.</div>`;
       return;
     }
-    box.innerHTML = `<div style="color:var(--success);font-size:0.85rem">✓ Found ${d.vmdks.length} VMDK(s)${d.manifest_path ? ' · manifest detected' : ''}</div>`;
-    buildVmdkCheckboxes(d.vmdks);
+
+    let statusParts = [];
+    if (d.vmdks.length)   statusParts.push(`${d.vmdks.length} VMDK(s)`);
+    if ((d.archives||[]).length) statusParts.push(`${d.archives.length} archive(s)`);
+    if (d.manifest_path)  statusParts.push('manifest detected');
+    if (d.vmx_path)       statusParts.push('VMX parsed — hardware auto-filled');
+    box.innerHTML = `<div style="color:var(--success);font-size:0.85rem">✓ Found ${statusParts.join(' · ')}</div>`;
+
+    buildVmdkCheckboxes(d.vmdks, d.archives || []);
   } catch(e) {
     box.innerHTML = `<div class="message error">Error: ${esc(e.message)}</div>`;
   }
 }
 
-function buildVmdkCheckboxes(vmdks) {
+function applyVmxSpecs(specs) {
+  // Job name — only pre-fill if blank
+  if (specs.name && !state.name) {
+    document.getElementById('wz_name').value = specs.name;
+    syncField('name', specs.name);
+  }
+  // Store extras in state for the summary card
+  state._vmxMemoryMb  = specs.memory_mb  || 0;
+  state._vmxCpuCount  = specs.cpu_count  || 1;
+  state._vmxFirmware  = specs.firmware   || 'bios';
+  state._vmxGuestOs   = specs.guest_os   || '';
+  state._vmxNetworks  = specs.networks   || [];
+  updateSummary();
+  // Show hardware hint banner
+  const box = document.getElementById('scan-status');
+  const existingHint = document.getElementById('vmx-hint');
+  if (existingHint) existingHint.remove();
+  const hint = document.createElement('div');
+  hint.id = 'vmx-hint';
+  hint.style.cssText = 'margin-top:10px;padding:10px 14px;border-radius:8px;background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.25);font-size:0.85rem';
+  hint.innerHTML = `<strong style="color:var(--accent)">VMX detected — auto-filled:</strong>
+    RAM <strong>${specs.memory_mb} MB</strong> · vCPUs <strong>${specs.cpu_count}</strong> ·
+    Firmware <strong>${specs.firmware.toUpperCase()}</strong> ·
+    OS <em>${esc(specs.guest_os || 'unknown')}</em>
+    ${specs.networks.length ? `· ${specs.networks.length} NIC(s): ${specs.networks.map(n=>esc(n.network_name)).join(', ')}` : ''}`;
+  box.after(hint);
+}
+
+function buildVmdkCheckboxes(vmdks, archives) {
   const list = document.getElementById('vmdk-checklist');
   list.innerHTML = '';
   state.source_paths = [];
-  vmdks.forEach((f, i) => {
-    const sizeGb = f.size ? ` (${(f.size/1073741824).toFixed(1)} GB)` : '';
+
+  function makeItem(path, label, checked) {
     const lbl = document.createElement('label');
     lbl.className = 'file-item';
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = f.path; cb.checked = true;
+    cb.type = 'checkbox'; cb.value = path; cb.checked = checked;
     cb.addEventListener('change', rebuildSourcePaths);
     lbl.appendChild(cb);
     const sp = document.createElement('span');
-    sp.textContent = ` ${f.name}${sizeGb}`;
+    sp.innerHTML = label;
     lbl.appendChild(sp);
     list.appendChild(lbl);
-    state.source_paths.push(f.path);
+    if (checked) state.source_paths.push(path);
+  }
+
+  vmdks.forEach(f => {
+    const sizeGb = f.size ? ` <span style="color:var(--muted)">(${(f.size/1073741824).toFixed(1)} GB)</span>` : '';
+    makeItem(f.path, ` ${esc(f.name)}${sizeGb}`, true);
+  });
+
+  (archives || []).forEach(a => {
+    const sizeGb = a.size ? ` <span style="color:var(--muted)">(${(a.size/1073741824).toFixed(1)} GB)</span>` : '';
+    const badge = `<span class="badge badge-warning" style="margin-left:8px">${esc(a.archive_type)}</span>`;
+    makeItem(a.path, ` ${esc(a.name)}${sizeGb}${badge}`, true);
   });
 }
 

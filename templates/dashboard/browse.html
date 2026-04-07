@@ -1,38 +1,150 @@
 {% extends "dashboard/base.html" %}
+{% block title %}Browse Host Filesystem{% endblock %}
+{% block nav_browse %}active{% endblock %}
 
 {% block content %}
-<section class="panel">
-  <h2>Browse Staging Files</h2>
-  <form method="get" class="form inline">
-    {{ form.as_p }}
-    <button type="submit" class="primary">Open</button>
-  </form>
-  <p class="hint">Current directory: <code>{{ directory }}</code></p>
-</section>
+<div class="page-header">
+  <div>
+    <div class="page-title">Browse Proxmox Host Filesystem</div>
+    <div class="page-subtitle">Navigate the Proxmox host via SFTP (SSH must be configured in your config profile).</div>
+  </div>
+  <a href="/wizard/" class="btn btn-primary btn-sm">+ New Migration</a>
+</div>
 
-<section class="grid two-up">
-  <article class="panel">
-    <h3>Folders</h3>
-    <ul class="list">
-      {% if directory != "" %}
-        <li><a href="/browse/?directory=">..</a></li>
-      {% endif %}
-      {% for folder in folders %}
-        <li><a href="/browse/?directory={{ folder|urlencode }}">{{ folder.name }}</a></li>
-      {% empty %}
-        <li>No subfolders.</li>
-      {% endfor %}
-    </ul>
-  </article>
-  <article class="panel">
-    <h3>Files</h3>
-    <ul class="list">
-      {% for file in files %}
-        <li>{{ file.name }}</li>
-      {% empty %}
-        <li>No files found.</li>
-      {% endfor %}
-    </ul>
-  </article>
-</section>
+<div class="panel">
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    <input type="text" id="pathInput" class="form-input" style="flex:1;min-width:220px;font-family:monospace"
+           placeholder="/var/lib/vz/dump" value="/"
+           onkeydown="if(event.key==='Enter') browse(this.value)" />
+    <button class="btn btn-primary" onclick="browse(document.getElementById('pathInput').value)">Go →</button>
+    <button class="btn btn-secondary" onclick="goUp()">↑ Up</button>
+  </div>
+
+  <div id="breadcrumb" style="font-size:0.82rem;color:var(--muted);margin-bottom:12px;font-family:monospace"></div>
+  <div id="browser-status" style="margin-bottom:10px"></div>
+
+  <div style="display:grid;grid-template-columns:1fr 2fr;gap:16px">
+    <div>
+      <div style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px">📁 Folders</div>
+      <div id="folder-list" class="file-list" style="min-height:120px">
+        <p class="file-empty">Loading…</p>
+      </div>
+    </div>
+    <div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em">📄 Files</span>
+        <button class="btn btn-primary btn-sm" id="btnUsePath" style="display:none"
+                onclick="usePath()">✓ Use This Directory in Wizard</button>
+      </div>
+      <div id="file-list" class="file-list" style="min-height:120px">
+        <p class="file-empty">Loading…</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentPath = '/';
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function browse(path) {
+  path = (path || '/').trim() || '/';
+  currentPath = path;
+  document.getElementById('pathInput').value = path;
+  document.getElementById('browser-status').innerHTML = '<span class="hint">⟳ Loading…</span>';
+  document.getElementById('folder-list').innerHTML = '<p class="file-empty">Loading…</p>';
+  document.getElementById('file-list').innerHTML  = '<p class="file-empty">Loading…</p>';
+  document.getElementById('btnUsePath').style.display = 'none';
+
+  // breadcrumb
+  const parts = path.replace(/\/+$/, '').split('/').filter(Boolean);
+  let crumb = `<a href="#" onclick="browse('/');return false">/</a>`;
+  let acc = '';
+  for (const p of parts) {
+    acc += '/' + p;
+    const a = acc;
+    crumb += ` / <a href="#" onclick="browse('${esc(a)}');return false">${esc(p)}</a>`;
+  }
+  document.getElementById('breadcrumb').innerHTML = crumb;
+
+  try {
+    const r = await fetch('/api/browse-directory/?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    if (!d.ok) {
+      document.getElementById('browser-status').innerHTML =
+        `<div class="message error">Error: ${esc(d.error)}</div>`;
+      document.getElementById('folder-list').innerHTML = '<p class="file-empty">—</p>';
+      document.getElementById('file-list').innerHTML   = '<p class="file-empty">—</p>';
+      return;
+    }
+
+    document.getElementById('browser-status').innerHTML =
+      `<span style="color:var(--success);font-size:0.82rem">✓ ${d.folders.length} folder(s) · ${d.files.length} file(s)</span>`;
+    document.getElementById('btnUsePath').style.display = '';
+
+    // folders
+    const fl = document.getElementById('folder-list');
+    if (!d.folders.length) {
+      fl.innerHTML = '<p class="file-empty">No subfolders.</p>';
+    } else {
+      fl.innerHTML = d.folders.map(f => {
+        const name = f.split('/').pop();
+        return `<label class="file-item" style="cursor:pointer" onclick="browse('${esc(f)}')">
+          <span>📁 ${esc(name)}</span>
+        </label>`;
+      }).join('');
+    }
+
+    // files
+    const fil = document.getElementById('file-list');
+    if (!d.files.length) {
+      fil.innerHTML = '<p class="file-empty">No files.</p>';
+    } else {
+      fil.innerHTML = d.files.map(f => {
+        const sizeStr = f.size ? ` <span style="color:var(--muted)">(${formatSize(f.size)})</span>` : '';
+        const icon = getIcon(f.name);
+        return `<label class="file-item">${icon} ${esc(f.name)}${sizeStr}</label>`;
+      }).join('');
+    }
+  } catch(e) {
+    document.getElementById('browser-status').innerHTML =
+      `<div class="message error">Request failed: ${esc(e.message)}</div>`;
+  }
+}
+
+function goUp() {
+  const parent = currentPath.replace(/\/+$/, '').split('/').slice(0, -1).join('/') || '/';
+  browse(parent);
+}
+
+function usePath() {
+  window.location.href = '/wizard/?dir=' + encodeURIComponent(currentPath);
+}
+
+function formatSize(bytes) {
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes >= 1024)       return (bytes / 1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function getIcon(name) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.vmdk'))                          return '💿';
+  if (lower.endsWith('.vmx'))                           return '⚙';
+  if (lower.endsWith('.json'))                          return '📋';
+  if (lower.match(/\.(zip|tar|gz|7z|bz2|xz|zst)$/))   return '🗜';
+  if (lower.match(/\.(log|txt)$/))                      return '📝';
+  return '📄';
+}
+
+// Auto-load initial path from URL param or default
+(function() {
+  const p = new URLSearchParams(location.search).get('path');
+  browse(p || '/');
+})();
+</script>
 {% endblock %}

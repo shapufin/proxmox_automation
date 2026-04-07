@@ -329,8 +329,15 @@ def browse_directory(request: HttpRequest) -> JsonResponse:
 
 @require_GET
 def vmdk_scan(request: HttpRequest) -> JsonResponse:
-    """Scan a HOST directory for VMDK files and auto-detect manifest.json.
-    Returns {ok, path, vmdks:[{path,name,size}], manifest_path, manifest}."""
+    """Scan a HOST directory for VMDK files, manifest.json, .vmx specs, and archives.
+
+    Returns:
+        ok, path, vmdks, manifest_path, manifest,
+        vmx_path, vmx_specs (parsed hardware hints),
+        archives ([{path, name, archive_type}])
+    """
+    from vmware_to_proxmox.disk import detect_archive_type, parse_vmx
+
     raw = request.GET.get("path", "")
     if not raw:
         return JsonResponse({"ok": False, "error": "path is required"}, status=200)
@@ -338,24 +345,57 @@ def vmdk_scan(request: HttpRequest) -> JsonResponse:
         engine = get_engine()
         listing = engine.proxmox.list_remote_dir(raw)
         all_files = listing.get("files", [])
-        vmdks = [f for f in all_files if f["name"].lower().endswith(".vmdk")]
+
+        vmdks: list[dict] = []
         manifest_path = ""
-        manifest = {}
+        manifest: dict = {}
+        vmx_path = ""
+        vmx_specs: dict = {}
+        archives: list[dict] = []
+
         for f in all_files:
-            if f["name"].lower() == "manifest.json":
+            name_lower = f["name"].lower()
+
+            if name_lower.endswith(".vmdk"):
+                vmdks.append(f)
+
+            elif name_lower == "manifest.json":
                 manifest_path = f["path"]
                 try:
                     content = engine.proxmox.read_remote_file(manifest_path)
                     manifest = json.loads(content)
                 except Exception:  # noqa: BLE001
                     manifest = {}
-                break
+
+            elif name_lower.endswith(".vmx") and not vmx_path:
+                vmx_path = f["path"]
+                try:
+                    content = engine.proxmox.read_remote_file(vmx_path)
+                    parsed = parse_vmx(content)
+                    # Exclude the raw key-dump from the API response (too large)
+                    vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
+                except Exception:  # noqa: BLE001
+                    vmx_specs = {}
+
+            else:
+                atype = detect_archive_type(f["name"])
+                if atype:
+                    archives.append({
+                        "path": f["path"],
+                        "name": f["name"],
+                        "size": f.get("size", 0),
+                        "archive_type": atype,
+                    })
+
         return JsonResponse({
             "ok": True,
             "path": listing["path"],
             "vmdks": vmdks,
             "manifest_path": manifest_path,
             "manifest": manifest,
+            "vmx_path": vmx_path,
+            "vmx_specs": vmx_specs,
+            "archives": archives,
         })
     except Exception as exc:  # noqa: BLE001
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .config import AppConfig
-from .disk import DiskConversionError, convert_disk, detect_disk_format, qemu_info, sha256_file
+from .disk import DiskConversionError, convert_disk, detect_archive_type, detect_disk_format, qemu_info, sha256_file
 from .guest import GuestRemediator
 from .models import DiskFormat, FirmwareMode, MigrationResult, MigrationTarget, VmwareDiskSpec, VmwareNicSpec, VmwareVmSpec
 from .proxmox import ProxmoxClient, ProxmoxClientError
@@ -149,7 +149,45 @@ class MigrationEngine:
             disks=disks,
         )
 
-    def _vm_from_manifest(self, manifest_path: Path) -> VmwareVmSpec:
+    @staticmethod
+    def _minimal_vm_spec(name: str, vmx_specs: Optional[dict] = None) -> VmwareVmSpec:
+        """Build a minimal VmwareVmSpec when no manifest.json is available.
+        Optionally enriched from parsed .vmx data."""
+        specs = vmx_specs or {}
+        nics: list[VmwareNicSpec] = []
+        for net in specs.get("networks", []):
+            nics.append(VmwareNicSpec(
+                label=f"Network adapter {net.get('index', 0)}",
+                mac_address=str(net.get("mac", "")),
+                network_name=str(net.get("network_name", "VM Network")),
+                adapter_type=str(net.get("adapter", "vmxnet3")),
+            ))
+        return VmwareVmSpec(
+            name=name or specs.get("name", "vm"),
+            moid=name or specs.get("name", "vm"),
+            guest_id=str(specs.get("guest_os", "")),
+            power_state="poweredOff",
+            firmware=str(specs.get("firmware", "bios")),
+            memory_mb=int(specs.get("memory_mb", 0) or 0),
+            cpu_count=int(specs.get("cpu_count", 1) or 1),
+            annotation="",
+            datastore="",
+            disks=[],
+            nics=nics,
+            has_snapshots=False,
+            has_vtpm=False,
+            has_pci_passthrough=False,
+        )
+
+    def _vm_from_manifest(self, manifest_path: Path, vmx_specs: Optional[dict] = None, fallback_name: str = "") -> VmwareVmSpec:
+        """Load VM spec from manifest_path. Falls back to a minimal spec if file is absent."""
+        if not str(manifest_path) or not manifest_path.exists():
+            self.logger.warning(
+                "manifest.json not found at %s — building minimal spec%s",
+                manifest_path,
+                " from .vmx" if vmx_specs else " (no vmx data)",
+            )
+            return self._minimal_vm_spec(fallback_name, vmx_specs)
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         if "vmware" in payload:
             payload = payload["vmware"]
@@ -265,10 +303,11 @@ class MigrationEngine:
         dry_run: Optional[bool] = None,
         start_after_import: bool = True,
         write_manifest: bool = True,
+        vmx_specs: Optional[dict] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
-        vm = self._vm_from_manifest(manifest_path)
+        vm = self._vm_from_manifest(manifest_path, vmx_specs=vmx_specs, fallback_name=vm_name)
         if vm_name and vm.name != vm_name:
             vm.name = vm_name
         warnings = self.vmware.validate_supported(vm) if vm.is_linux else []
@@ -528,3 +567,72 @@ class MigrationEngine:
                 except Exception as rollback_error:
                     self.logger.error("Rollback failed for VMID %s: %s", vmid, rollback_error)
             raise
+
+    # ------------------------------------------------------------------
+    # Archive-aware entry point for the local-disk migration path
+    # ------------------------------------------------------------------
+
+    def migrate_local_disks_or_archive(
+        self,
+        vm_name: str,
+        manifest_path: Path,
+        disk_paths: Iterable[str | Path],
+        storage: Optional[str] = None,
+        bridge: Optional[str] = None,
+        disk_format: Optional[DiskFormat] = None,
+        dry_run: Optional[bool] = None,
+        start_after_import: bool = True,
+        vmx_specs: Optional[dict] = None,
+    ) -> MigrationResult:
+        """High-level entry point for local-disk migration with archive support.
+
+        For each path in *disk_paths*:
+        - If it is a recognised archive (.zip / .tar.gz / .7z / …) the archive
+          is extracted on the Proxmox HOST via SSH into a temporary directory
+          (avoiding pulling gigabytes of data into the LXC).  The VMDKs found
+          inside are then used as the effective source paths.
+        - Otherwise the path is forwarded unchanged.
+
+        Temp directories created for archive extraction are deleted after the
+        migration completes (or fails).
+        """
+        resolved_paths: list[Path] = []
+        host_temp_dirs: list[str] = []
+
+        for raw_path in disk_paths:
+            raw_path_str = str(raw_path)
+            archive_type = detect_archive_type(raw_path_str)
+            if archive_type is not None:
+                stem = Path(raw_path_str).stem.replace(" ", "_")
+                dest = f"/tmp/pve-extract-{stem}"
+                self.logger.info(
+                    "Archive detected (%s): extracting %s → %s on host",
+                    archive_type, raw_path_str, dest,
+                )
+                self.proxmox.extract_archive(raw_path_str, dest)
+                host_temp_dirs.append(dest)
+                listing = self.proxmox.list_remote_dir(dest)
+                for f in listing.get("files", []):
+                    if f["name"].lower().endswith(".vmdk"):
+                        resolved_paths.append(Path(f["path"]))
+            else:
+                resolved_paths.append(Path(raw_path_str))
+
+        try:
+            return self.migrate_local_disks(
+                vm_name=vm_name,
+                manifest_path=manifest_path,
+                disk_paths=resolved_paths,
+                storage=storage,
+                bridge=bridge,
+                disk_format=disk_format,
+                dry_run=dry_run,
+                start_after_import=start_after_import,
+                vmx_specs=vmx_specs,
+            )
+        finally:
+            for tmp in host_temp_dirs:
+                try:
+                    self.proxmox.remove_remote_dir(tmp)
+                except Exception as cleanup_err:  # noqa: BLE001
+                    self.logger.warning("Failed to clean up host temp dir %s: %s", tmp, cleanup_err)

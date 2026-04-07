@@ -2,15 +2,127 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from .models import DiskFormat
 
 
 class DiskConversionError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------------------
+# VMX parsing
+# ---------------------------------------------------------------------------
+
+_VMX_DISK_RE = re.compile(
+    r'^(scsi|ide|sata|nvme)\d+:\d+\.fileName\s*=\s*"([^"]+)"', re.IGNORECASE
+)
+
+
+def parse_vmx(content: str) -> dict[str, object]:
+    """Parse a .vmx file (text content) and return a normalised hardware spec dict.
+
+    Returns keys:
+        name          (str)  — displayName
+        memory_mb     (int)  — memsize in MB
+        cpu_count     (int)  — numvcpus
+        guest_os      (str)  — guestOS value
+        firmware      (str)  — 'efi' or 'bios'
+        disk_files    (list[str])  — all *.vmdk references in disk order
+        scsi_type     (str)  — e.g. 'lsilogic', 'pvscsi'
+        networks      (list[dict]) — [{adapter, network_name, mac}]
+        raw           (dict[str, str])  — every parsed key=value pair
+    """
+    raw: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        raw[key.strip().lower()] = value.strip().strip('"')
+
+    memory_mb = int(raw.get("memsize", 0) or 0)
+    cpu_count = int(raw.get("numvcpus", 1) or 1)
+    name = raw.get("displayname", "")
+    guest_os = raw.get("guestos", "")
+
+    firmware_raw = raw.get("firmware", "bios").lower()
+    firmware = "efi" if firmware_raw in {"efi", "uefi"} else "bios"
+
+    # Collect disk files in slot order (scsi0:0, scsi0:1, scsi1:0 …)
+    disk_entries: list[tuple[str, str]] = []
+    for key, val in raw.items():
+        m = re.match(
+            r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.filename$', key, re.IGNORECASE
+        )
+        if m and val.lower().endswith(".vmdk"):
+            slot_key = (int(m.group(2)), int(m.group(3)))
+            disk_entries.append((slot_key, val))  # type: ignore[arg-type]
+    disk_entries.sort(key=lambda t: t[0])
+    disk_files = [Path(v).name for _, v in disk_entries]
+
+    # SCSI controller type
+    scsi_type = raw.get("scsi0.virtualdev", raw.get("scsi0.devicetype", "lsilogic"))
+
+    # Network adapters
+    networks: list[dict[str, str]] = []
+    for key, val in raw.items():
+        m = re.match(r'^ethernet(\d+)\.networkname$', key, re.IGNORECASE)
+        if m:
+            idx = m.group(1)
+            adapter = raw.get(f"ethernet{idx}.virtualdev", "vmxnet3")
+            mac = raw.get(f"ethernet{idx}.address", raw.get(f"ethernet{idx}.generatedaddress", ""))
+            networks.append({"index": idx, "network_name": val, "adapter": adapter, "mac": mac})
+    networks.sort(key=lambda n: int(n["index"]))
+
+    return {
+        "name": name,
+        "memory_mb": memory_mb,
+        "cpu_count": cpu_count,
+        "guest_os": guest_os,
+        "firmware": firmware,
+        "disk_files": disk_files,
+        "scsi_type": scsi_type,
+        "networks": networks,
+        "raw": raw,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Archive detection
+# ---------------------------------------------------------------------------
+
+_ARCHIVE_SUFFIXES: dict[str, str] = {
+    ".zip":  "zip",
+    ".7z":   "7z",
+    ".tar":  "tar",
+    ".gz":   "tar.gz",   # will be re-checked below for .tar.gz
+    ".tgz":  "tar.gz",
+    ".bz2":  "tar.bz2",
+    ".xz":   "tar.xz",
+    ".zst":  "tar.zst",
+}
+
+
+def detect_archive_type(filename: str) -> Optional[str]:
+    """Return a canonical archive type string or None if not an archive.
+
+    Possible return values: 'zip', '7z', 'tar', 'tar.gz', 'tar.bz2', 'tar.xz', 'tar.zst'
+    """
+    lower = filename.lower()
+    # Multi-suffix check first (.tar.gz, .tar.bz2 …)
+    for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst"):
+        if lower.endswith(suffix):
+            return suffix.lstrip(".")
+    p = Path(lower)
+    return _ARCHIVE_SUFFIXES.get(p.suffix)
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:

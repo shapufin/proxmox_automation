@@ -208,11 +208,28 @@ class ProxmoxClient:
         if api is not None:
             try:
                 data = api.nodes(self.node).network.get()
-                return self._parse_bridges(data)
+                return self._parse_bridges(self._normalise_network_data(data))
             except Exception as exc:  # noqa: BLE001
                 log.warning("API network query failed, falling back to SSH CLI: %s", exc)
         proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
-        return self._parse_bridges(json.loads(proc.stdout or "[]"))
+        raw = json.loads(proc.stdout or "[]")
+        return self._parse_bridges(self._normalise_network_data(raw))
+
+    @staticmethod
+    def _normalise_network_data(data: Any) -> list[dict[str, Any]]:
+        """pvesh returns a dict keyed by iface name; the REST API returns a list.
+        Normalise both into a list[dict] with an 'iface' key present."""
+        if isinstance(data, dict):
+            result = []
+            for iface_name, row in data.items():
+                if isinstance(row, dict):
+                    entry = dict(row)
+                    entry.setdefault("iface", iface_name)
+                    result.append(entry)
+            return result
+        if isinstance(data, list):
+            return data
+        return []
 
     _BRIDGE_TYPES = {"bridge", "OVSBridge", "vnet"}  # include SDN vnets and OVS bridges
 
@@ -230,7 +247,7 @@ class ProxmoxClient:
                 ProxmoxBridgeSpec(
                     name=iface,
                     active=bool(row.get("active", False)),
-                    vlan_aware=str(row.get("vlan_aware", "0")) in {"1", "true", "True"},
+                    vlan_aware=bool(int(row.get("vlan_aware", 0) or 0)),
                     bridge_ports=str(row.get("bridge_ports", "") or ""),
                     comments=str(row.get("comments", "") or ""),
                 )
@@ -420,3 +437,63 @@ class ProxmoxClient:
         except Exception:  # noqa: BLE001
             self._close_ssh()
             return ""
+
+    # ------------------------------------------------------------------
+    # Archive extraction (host-side via SSH to avoid pulling GB into LXC)
+    # ------------------------------------------------------------------
+
+    _EXTRACT_CMDS: dict[str, list[str]] = {
+        "zip":      ["unzip", "-o", "{archive}", "-d", "{dest}"],
+        "7z":       ["7z", "x", "-y", "-o{dest}", "{archive}"],
+        "tar":      ["tar", "--no-same-owner", "-xf",  "{archive}", "-C", "{dest}"],
+        "tar.gz":   ["tar", "--no-same-owner", "-xzf", "{archive}", "-C", "{dest}"],
+        "tar.bz2":  ["tar", "--no-same-owner", "-xjf", "{archive}", "-C", "{dest}"],
+        "tar.xz":   ["tar", "--no-same-owner", "-xJf", "{archive}", "-C", "{dest}"],
+        "tar.zst":  ["tar", "--no-same-owner", "--use-compress-program=zstd", "-xf", "{archive}", "-C", "{dest}"],
+    }
+
+    def extract_archive(self, remote_archive: str, dest_dir: str) -> str:
+        """Extract an archive on the Proxmox HOST (via SSH) into *dest_dir*.
+
+        Args:
+            remote_archive: Host-absolute path to the archive file.
+            dest_dir:        Host-absolute path to the destination directory
+                             (will be created if it does not exist).
+
+        Returns:
+            The *dest_dir* path so callers can chain directly.
+
+        Raises:
+            ProxmoxClientError: if the archive type is unrecognised or extraction fails.
+        """
+        from .disk import detect_archive_type  # local import to avoid circular
+        archive_type = detect_archive_type(remote_archive)
+        if archive_type is None:
+            raise ProxmoxClientError(
+                f"Cannot extract '{remote_archive}': unrecognised archive type. "
+                "Supported: .zip, .7z, .tar, .tar.gz, .tar.bz2, .tar.xz, .tar.zst"
+            )
+        template = self._EXTRACT_CMDS.get(archive_type)
+        if template is None:
+            raise ProxmoxClientError(f"No extraction command configured for type '{archive_type}'")
+
+        # Ensure destination directory exists on the host
+        self._run(["mkdir", "-p", dest_dir])
+
+        cmd = [
+            part.replace("{archive}", remote_archive).replace("{dest}", dest_dir)
+            for part in template
+        ]
+        log.info("Extracting %s (%s) → %s", remote_archive, archive_type, dest_dir)
+        self._run(cmd)
+        return dest_dir
+
+    def remove_remote_dir(self, remote_dir: str) -> None:
+        """Recursively delete a directory on the Proxmox HOST via SSH.
+
+        Uses 'rm -rf' — call only on temp directories created by extract_archive.
+        """
+        if not remote_dir or remote_dir in {"/", "/var", "/etc", "/home", "/root"}:
+            raise ProxmoxClientError(f"Refusing to delete dangerous path: {remote_dir!r}")
+        log.info("Removing host temp directory %s", remote_dir)
+        self._run(["rm", "-rf", remote_dir])
