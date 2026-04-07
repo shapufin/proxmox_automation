@@ -1,8 +1,28 @@
 services:
+  migrate:
+    build:
+      context: .
+    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py migrate --noinput"
+    environment:
+      DJANGO_DEBUG: "0"
+      DJANGO_ALLOWED_HOSTS: "*"
+      DJANGO_SECRET_KEY: "change-me"
+      VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
+      VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
+      VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./configs:/app/configs
+      - ./data:/app/data
+      - ./staging:/data/staging
+
   web:
     build:
       context: .
-    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py migrate --noinput && gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+    command: sh -c "mkdir -p /app/configs /app/data /data/staging && gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     environment:
       DJANGO_DEBUG: "0"
       DJANGO_ALLOWED_HOSTS: "*"
@@ -21,7 +41,10 @@ services:
   worker:
     build:
       context: .
-    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py migrate --noinput && python manage.py worker"
+    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py worker"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     environment:
       DJANGO_DEBUG: "0"
       DJANGO_ALLOWED_HOSTS: "*"
