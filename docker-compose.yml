@@ -1,41 +1,184 @@
-x-common: &common
-  build:
-    context: .
-  environment:
-    DJANGO_DEBUG: "0"
-    DJANGO_ALLOWED_HOSTS: "*"
-    DJANGO_SECRET_KEY: "change-me"
-    DJANGO_DB_PATH: /app/data/db.sqlite3
-    VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
-    VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
-    VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
-  volumes:
-    - ./config.yaml:/config/config.yaml:ro
-    - ./configs:/app/configs
-    - ./data:/app/data
-    - ./staging:/data/staging
-    # Uncomment to expose Proxmox host storage to the container:
-    # - /var/lib/vz/dump:/mnt/vmware_staging:ro
+# Production Docker Compose for VMware-to-Proxmox Migration Tool
+# PostgreSQL backend with all enterprise features
+
+version: '3.8'
 
 services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vmware-to-proxmox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vmware_to_proxmox
+      POSTGRES_USER: vmware_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure-password-change-me}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./vmware_to_proxmox/schemas/postgresql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - migration_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vmware_user -d vmware_to_proxmox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: vmware-to-proxmox-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis-password-change-me}
+    volumes:
+      - redis_data:/data
+    networks:
+      - migration_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Database migration and static file collection
   migrate:
-    <<: *common
+    build: 
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: vmware-to-proxmox-migrate
+    restart: "no"
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - migration_network
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+      - static_volume:/app/staticfiles
+      - logs_volume:/app/logs
     command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py collectstatic --noinput --clear"
+      sh -c "
+        python manage.py migrate --noinput &&
+        python manage.py collectstatic --noinput --clear &&
+        python manage.py createcachetable &&
+        echo 'Migration and static files completed successfully'
+      "
 
+  # Web application
   web:
-    <<: *common
-    command: gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2
+    build: 
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: vmware-to-proxmox-web
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DJANGO_DEBUG=false
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
+      - WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}
     depends_on:
       migrate:
         condition: service_completed_successfully
+    networks:
+      - migration_network
     ports:
-      - "8000:8000"
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+      - static_volume:/app/staticfiles
+      - logs_volume:/app/logs
+    command: >
+      gunicorn webui.wsgi:application 
+      --bind 0.0.0.0:8000 
+      --workers ${WEB_CONCURRENCY:-2}
+      --worker-class gevent
+      --worker-connections 1000
+      --max-requests 1000
+      --max-requests-jitter 100
+      --timeout 300
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
+      --capture-output
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # Background worker
   worker:
-    <<: *common
-    command: python manage.py worker
+    build: 
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: vmware-to-proxmox-worker
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
     depends_on:
       migrate:
         condition: service_completed_successfully
+    networks:
+      - migration_network
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+      - logs_volume:/app/logs
+    command: >
+      python manage.py worker 
+      --concurrency ${WORKER_CONCURRENCY:-1}
+      --loglevel=info
+      --max-tasks-per-child=1000
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  migration_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  logs_volume:
+    driver: local

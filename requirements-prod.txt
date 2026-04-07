@@ -9,6 +9,7 @@ gevent==23.9.1
 # Database
 psycopg2-binary==2.9.9
 redis==5.0.1
+django-redis==5.4.0
 
 # VMware integration
 pyvmomi==8.0.2.0.1

@@ -1,0 +1,41 @@
+x-common: &common
+  build:
+    context: .
+  environment:
+    DJANGO_DEBUG: "0"
+    DJANGO_ALLOWED_HOSTS: "*"
+    DJANGO_SECRET_KEY: "change-me"
+    DJANGO_DB_PATH: /app/data/db.sqlite3
+    VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
+    VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
+    VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
+  volumes:
+    - ./config.yaml:/config/config.yaml:ro
+    - ./configs:/app/configs
+    - ./data:/app/data
+    - ./staging:/data/staging
+    # Uncomment to expose Proxmox host storage to the container:
+    # - /var/lib/vz/dump:/mnt/vmware_staging:ro
+
+services:
+  migrate:
+    <<: *common
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput --clear"
+
+  web:
+    <<: *common
+    command: gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *common
+    command: python manage.py worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
