@@ -1,7 +1,7 @@
 # Production Dockerfile for VMware-to-Proxmox Migration Tool
 # Multi-stage build with security hardening and optimization
 
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Set build arguments
 ARG BUILD_DATE
@@ -48,7 +48,7 @@ RUN pip install --upgrade pip setuptools wheel && \
     pip install gunicorn gevent redis psycopg2-binary
 
 # Production stage
-FROM python:3.11-slim as production
+FROM python:3.11-slim AS production
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \

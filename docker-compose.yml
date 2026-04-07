@@ -1,8 +1,6 @@
 # Production Docker Compose for VMware-to-Proxmox Migration Tool
 # PostgreSQL backend with all enterprise features
 
-version: '3.8'
-
 services:
   # PostgreSQL database
   postgres:

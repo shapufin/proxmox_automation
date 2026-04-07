@@ -34,10 +34,10 @@ if not exist logs mkdir logs
 
 REM Build and start services
 echo 🔨 Building Docker images...
-docker-compose build
+docker compose build
 
 echo 🚀 Starting services...
-docker-compose up -d
+docker compose up -d
 
 REM Wait for services to be ready
 echo ⏳ Waiting for services to be ready...
@@ -45,7 +45,7 @@ timeout /t 10 /nobreak >nul
 
 REM Check service health
 echo 🔍 Checking service health...
-docker-compose ps
+docker compose ps
 
 echo.
 echo ✅ Startup complete!
@@ -54,8 +54,8 @@ echo 🌐 Web Interface: http://localhost:8000
 echo 📊 Health Check:  http://localhost:8000/health/
 echo.
 echo 📋 Useful commands:
-echo    View logs:     docker-compose logs -f
-echo    Stop services: docker-compose down
-echo    Restart:       docker-compose restart
+echo    View logs:     docker compose logs -f
+echo    Stop services: docker compose down
+echo    Restart:       docker compose restart
 echo.
 pause
