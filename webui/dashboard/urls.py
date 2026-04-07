@@ -16,4 +16,5 @@ urlpatterns = [
     path("jobs/<int:job_id>/run/", views.run_pending_job, name="run_pending_job"),
     path("api/proxmox-status/", views.proxmox_status, name="proxmox_status"),
     path("api/browse-directory/", views.browse_directory, name="browse_directory"),
+    path("api/vmdk-scan/", views.vmdk_scan, name="vmdk_scan"),
 ]

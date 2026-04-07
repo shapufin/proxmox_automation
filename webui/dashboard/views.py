@@ -105,7 +105,15 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         engine = get_engine()
         inventory = engine.inventory()
     except Exception as exc:  # noqa: BLE001
-        messages.warning(request, f"Inventory is unavailable right now: {exc}")
+        err = str(exc)
+        if "Name or service not known" in err or "nodename nor servname" in err or "Connect call failed" in err:
+            messages.warning(
+                request,
+                "Proxmox host is not reachable yet. Set proxmox.api_host (IP address) and "
+                "proxmox.ssh_host in config.yaml, then click \u22ef Test & Refresh.",
+            )
+        else:
+            messages.warning(request, f"Inventory is unavailable right now: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     return _render_dashboard(request, _job_form(directory, vm_choices), inventory, _config_form(profile_name))
 
@@ -265,15 +273,47 @@ def proxmox_status(request: HttpRequest) -> JsonResponse:
 
 @require_GET
 def browse_directory(request: HttpRequest) -> JsonResponse:
-    """Return folder/file listing for an arbitrary path — used by the directory picker."""
+    """List HOST filesystem via SFTP when SSH is configured, otherwise local."""
     raw = request.GET.get("path", "")
+    if not raw:
+        raw = "/"
     try:
-        stage_view = list_stage_entries(raw)
+        engine = get_engine()
+        result = engine.proxmox.list_remote_dir(raw)
+        return JsonResponse({"ok": True, **result})
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+
+
+@require_GET
+def vmdk_scan(request: HttpRequest) -> JsonResponse:
+    """Scan a HOST directory for VMDK files and auto-detect manifest.json.
+    Returns {ok, path, vmdks:[{path,name,size}], manifest_path, manifest}."""
+    raw = request.GET.get("path", "")
+    if not raw:
+        return JsonResponse({"ok": False, "error": "path is required"}, status=200)
+    try:
+        engine = get_engine()
+        listing = engine.proxmox.list_remote_dir(raw)
+        all_files = listing.get("files", [])
+        vmdks = [f for f in all_files if f["name"].lower().endswith(".vmdk")]
+        manifest_path = ""
+        manifest = {}
+        for f in all_files:
+            if f["name"].lower() == "manifest.json":
+                manifest_path = f["path"]
+                try:
+                    content = engine.proxmox.read_remote_file(manifest_path)
+                    manifest = json.loads(content)
+                except Exception:  # noqa: BLE001
+                    manifest = {}
+                break
         return JsonResponse({
             "ok": True,
-            "path": str(stage_view["directory"]),
-            "folders": [str(p) for p in stage_view["folders"]],
-            "files": [{"path": str(p), "name": p.name} for p in stage_view["files"]],
+            "path": listing["path"],
+            "vmdks": vmdks,
+            "manifest_path": manifest_path,
+            "manifest": manifest,
         })
     except Exception as exc:  # noqa: BLE001
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)

@@ -165,58 +165,65 @@
             {{ form.vm_name.errors }}
           </div>
 
-          {# Local disk staging #}
+          {# State A: VMDK picker — uses host SFTP browser #}
           <div class="field">
-            <label>Staging directory <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
+            <label>Host staging directory <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
             <div style="display:flex;gap:8px;align-items:center">
               <input type="text" id="dirInput" value="{{ form.directory.value|default:'' }}"
-                     placeholder="/data/staging/vm-01"
+                     placeholder="/var/lib/vz/dump/myvm"
                      style="flex:1;background:#0b1324;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:0.92rem"
                      oninput="document.getElementById('dirHidden').value=this.value" />
-              <button type="button" class="btn btn-secondary btn-sm" onclick="browseDir()">📂 Browse</button>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="loadFiles()">⟳ Load Files</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openFileBrowser()">📂 Browse Host</button>
+              <button type="button" class="btn btn-primary btn-sm" onclick="scanVmdks()">🔍 Scan for VMDKs</button>
             </div>
-            <span class="help">Type any path on the Proxmox host where you copied the VMDK files, or click Browse to navigate folders.</span>
-            <div id="dirBrowser" style="display:none;margin-top:10px"></div>
+            <span class="help">Enter the <strong>host-side absolute path</strong> where VMDK files are stored (e.g. <code>/var/lib/vz/dump/myvm</code>). Click Browse to navigate the Proxmox host filesystem via SSH.</span>
           </div>
 
-          <div class="field">
-            <label for="id_manifest_path">Manifest file path <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
+          <div id="vmdk-scan-result" style="display:none;margin-top:4px"></div>
+
+          <div class="field" id="field-manifest">
+            <label for="id_manifest_path">Manifest file path <span style="color:var(--muted);font-weight:400">(auto-detected or enter manually)</span></label>
             {{ form.manifest_path }}
-            <span class="help">Path to the JSON manifest file exported alongside the VMDK. Example: <code>/data/staging/vm-01/manifest.json</code></span>
+            <span class="help">Auto-filled when manifest.json exists next to the VMDK. Example: <code>/var/lib/vz/dump/myvm/manifest.json</code></span>
             {{ form.manifest_path.errors }}
           </div>
 
-          <div class="field">
-            <label>Select disk files to import</label>
-            <span class="help" style="margin-bottom:8px;display:block">Tick every VMDK file that belongs to this VM.</span>
+          <div class="field" id="field-source-paths">
+            <label>Select VMDK files to import</label>
+            <span class="help" style="margin-bottom:8px;display:block">Tick every VMDK that belongs to this VM. <strong>These must be host-absolute paths</strong> — exactly what <code>qm importdisk</code> will receive.</span>
             {{ form.source_paths.errors }}
-            <div class="file-list">
+            <div class="file-list" id="vmdk-checklist">
               {% for choice in form.source_paths %}
                 <label class="file-item">{{ choice.tag }}<span>{{ choice.choice_label }}</span></label>
               {% empty %}
-                <p class="file-empty">No files found yet — load a staging directory above first.</p>
+                <p class="file-empty" id="vmdk-empty-hint">No files yet — enter a directory above and click Scan for VMDKs.</p>
               {% endfor %}
             </div>
           </div>
         </div>
       </div>
 
-      {# STEP 4 — DESTINATION #}
+      {# STEP 4 — DESTINATION (State B + C) #}
       <div class="step">
         <div class="step-num">4</div>
         <div class="step-body">
           <div class="step-title">Choose destination on Proxmox</div>
-          <div class="step-desc">Pick the storage pool and network bridge. Leave on Auto to let Proxmox decide.</div>
+          <div class="step-desc">Click Discover to fetch live storages and bridges from the Proxmox host, then pick your targets.</div>
+
+          <div style="margin-bottom:14px">
+            <button type="button" class="btn btn-primary btn-sm" onclick="discoverProxmox()">🔌 Discover Storages &amp; Networks</button>
+            <span id="discover-status" style="margin-left:10px;font-size:0.85rem;color:var(--muted)"></span>
+          </div>
+          <div id="discover-result" style="display:none;margin-bottom:14px"></div>
 
           <div class="field-row">
             <div class="field">
-              <label for="id_storage">Storage pool</label>
+              <label for="id_storage">Storage pool <span style="color:var(--muted);font-weight:400">(State B)</span></label>
               {{ form.storage }}
               <span class="help">Where to store the VM disk on Proxmox.</span>
             </div>
             <div class="field">
-              <label for="id_bridge">Network bridge</label>
+              <label for="id_bridge">Network bridge <span style="color:var(--muted);font-weight:400">(State C)</span></label>
               {{ form.bridge }}
               <span class="help">The virtual switch the VM will connect to.</span>
             </div>
@@ -322,14 +329,128 @@
   </table>
 </div>
 
+<!-- ── File Browser Modal ── -->
+<div id="fileBrowserModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#0f1b2d;border:1px solid #1e3a5f;border-radius:12px;width:min(720px,96vw);max-height:85vh;display:flex;flex-direction:column;box-shadow:0 24px 60px #000a">
+    <div style="padding:16px 20px;border-bottom:1px solid #1e3a5f;display:flex;align-items:center;gap:12px">
+      <span style="font-weight:700;font-size:1rem">📂 Browse Proxmox Host Filesystem</span>
+      <button onclick="closeFileBrowser()" style="margin-left:auto;background:none;border:none;color:#8bafd4;font-size:1.4rem;cursor:pointer">✕</button>
+    </div>
+    <div style="padding:10px 20px;border-bottom:1px solid #1e3a5f;display:flex;gap:8px;align-items:center">
+      <input type="text" id="modalPathInput" placeholder="/var/lib/vz/dump"
+        style="flex:1;background:#0b1324;color:#e2eaf4;border:1px solid #1e3a5f;border-radius:6px;padding:8px 12px;font-size:0.9rem;font-family:monospace"
+        onkeydown="if(event.key==='Enter'){modalNavigate(this.value)}" />
+      <button class="btn btn-secondary btn-sm" onclick="modalNavigate(document.getElementById('modalPathInput').value)">Go</button>
+    </div>
+    <div id="modalListing" style="flex:1;overflow-y:auto;padding:8px 12px"></div>
+    <div style="padding:12px 20px;border-top:1px solid #1e3a5f;display:flex;gap:8px">
+      <button class="btn btn-primary btn-sm" onclick="selectCurrentDir()">✓ Use This Directory</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeFileBrowser()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script>
-/* ── Proxmox live test ── */
+/* ═══════════════════════════════════════════════
+   STATE MACHINE
+   State A: Select VMDK  →  /api/vmdk-scan/
+   State B: Select Storage  →  /api/proxmox-status/
+   State C: Select Network  →  same response
+═══════════════════════════════════════════════ */
+
+/* ── State A: VMDK Scanner ── */
+async function scanVmdks() {
+  const path = document.getElementById('dirInput').value.trim();
+  if (!path) { alert('Enter a host directory path first.'); return; }
+  document.getElementById('dirHidden').value = path;
+  const box = document.getElementById('vmdk-scan-result');
+  box.style.display = 'block';
+  box.innerHTML = '<p class="hint">🔍 Scanning host filesystem via SSH…</p>';
+  try {
+    const r = await fetch('/api/vmdk-scan/?path=' + encodeURIComponent(path));
+    const data = await r.json();
+    if (!data.ok) { box.innerHTML = `<div class="message error">Scan failed: ${escHtml(data.error)}</div>`; return; }
+    renderVmdkResults(data);
+  } catch(e) {
+    box.innerHTML = `<div class="message error">Scan error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderVmdkResults(data) {
+  const box = document.getElementById('vmdk-scan-result');
+  const checklist = document.getElementById('vmdk-checklist');
+  if (!data.vmdks.length) {
+    box.innerHTML = `<div class="message" style="color:var(--warning)">No .vmdk files found in <code>${escHtml(data.path)}</code>. Navigate to the correct directory.</div>`;
+    return;
+  }
+  /* Auto-fill manifest */
+  if (data.manifest_path) {
+    const mf = document.getElementById('id_manifest_path');
+    if (mf) mf.value = data.manifest_path;
+  }
+  box.innerHTML = `<div style="color:#4ade80;font-size:0.85rem;margin-bottom:6px">✓ Found ${data.vmdks.length} VMDK(s) in <code>${escHtml(data.path)}</code>${data.manifest_path ? ' — manifest auto-detected' : ' — no manifest.json found'}</div>`;
+  /* Rebuild VMDK checkboxes */
+  checklist.innerHTML = '';
+  data.vmdks.forEach((f, i) => {
+    const id = `dynvmdk_${i}`;
+    const sizeGb = f.size ? ` (${(f.size/1073741824).toFixed(1)} GB)` : '';
+    const label = document.createElement('label');
+    label.className = 'file-item';
+    label.style.cursor = 'pointer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.name = 'source_paths';
+    cb.value = f.path;
+    cb.id = id;
+    cb.checked = true;
+    label.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = ` ${f.name}${sizeGb}`;
+    span.style.fontFamily = 'monospace';
+    label.appendChild(span);
+    checklist.appendChild(label);
+  });
+}
+
+/* ── State B + C: Proxmox Discovery ── */
+async function discoverProxmox() {
+  const status = document.getElementById('discover-status');
+  const result = document.getElementById('discover-result');
+  status.textContent = '⟳ Connecting…';
+  result.style.display = 'none';
+  try {
+    const r = await fetch('/api/proxmox-status/');
+    const data = await r.json();
+    if (!data.ok) {
+      status.textContent = '✗ Failed';
+      status.style.color = 'var(--error)';
+      result.style.display = 'block';
+      result.innerHTML = `<div class="message error">${escHtml(data.error)}</div>`;
+      return;
+    }
+    status.textContent = `✓ ${data.storages.length} storages, ${data.bridges.length} bridges`;
+    status.style.color = '#4ade80';
+    updateDropdowns(data.storages, data.bridges);
+    /* Also update the top-panel */
+    document.getElementById('sc-storages').innerHTML = `<span class="ok">${data.storages.length} found</span>`;
+    document.getElementById('sc-bridges').innerHTML  = `<span class="ok">${data.bridges.length} found</span>`;
+    result.style.display = 'block';
+    result.innerHTML = renderInventoryTables(data);
+    /* Update the global test panel too */
+    document.getElementById('proxmoxResult').innerHTML = renderInventoryTables(data);
+  } catch(e) {
+    status.textContent = '✗ Request failed';
+    status.style.color = 'var(--error)';
+  }
+}
+
+/* Also wires the top "Test & Refresh" button */
 async function refreshProxmox() {
   const btn = document.getElementById('btnRefreshProxmox');
   const result = document.getElementById('proxmoxResult');
   btn.disabled = true;
   btn.textContent = '⟳ Querying…';
-  result.innerHTML = '<p class="hint">Connecting to Proxmox, please wait…</p>';
+  result.innerHTML = '<p class="hint">Connecting to Proxmox…</p>';
   try {
     const r = await fetch('/api/proxmox-status/');
     const data = await r.json();
@@ -351,24 +472,23 @@ async function refreshProxmox() {
 }
 
 function renderInventoryTables(data) {
-  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:4px">';
-  html += '<div><h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:8px">💾 Storages</h3>';
-  html += '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Content</th><th>Free</th><th>Active</th></tr></thead><tbody>';
-  if (!data.storages.length) html += '<tr class="no-data"><td colspan="5">No storages found</td></tr>';
+  let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">';
+  h += '<div><p style="font-size:0.75rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px">💾 Storages</p>';
+  h += '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Free</th><th></th></tr></thead><tbody>';
+  if (!data.storages.length) h += '<tr class="no-data"><td colspan="4">None</td></tr>';
   for (const s of data.storages) {
-    const dot = s.active ? '🟢' : '🔴';
-    html += `<tr><td><strong>${escHtml(s.storage)}</strong></td><td style="color:var(--muted)">${escHtml(s.type)}</td><td style="color:var(--muted);font-size:0.8rem">${escHtml(s.content)}</td><td>${s.available_gb} GB</td><td>${dot}</td></tr>`;
+    h += `<tr><td><strong>${escHtml(s.storage)}</strong></td><td style="color:var(--muted)">${escHtml(s.type)}</td><td>${s.available_gb} GB</td><td>${s.active?'🟢':'🔴'}</td></tr>`;
   }
-  html += '</tbody></table></div>';
-  html += '<div><h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:8px">🌐 Bridges / Networks</h3>';
-  html += '<table class="table"><thead><tr><th>Name</th><th>Ports</th><th>VLAN</th></tr></thead><tbody>';
-  if (!data.bridges.length) html += '<tr class="no-data"><td colspan="3">No bridges found</td></tr>';
+  h += '</tbody></table></div>';
+  h += '<div><p style="font-size:0.75rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px">🌐 Bridges / SDN</p>';
+  h += '<table class="table"><thead><tr><th>Name</th><th>Ports</th><th>VLAN</th></tr></thead><tbody>';
+  if (!data.bridges.length) h += '<tr class="no-data"><td colspan="3">None</td></tr>';
   for (const b of data.bridges) {
     const vlan = b.vlan_aware ? '<span class="badge badge-info">VLAN</span>' : '';
-    html += `<tr><td><strong>${escHtml(b.name)}</strong></td><td style="color:var(--muted);font-size:0.82rem">${escHtml(b.ports||'')}</td><td>${vlan}</td></tr>`;
+    h += `<tr><td><strong>${escHtml(b.name)}</strong></td><td style="color:var(--muted);font-size:0.8rem">${escHtml(b.ports||'')}</td><td>${vlan}</td></tr>`;
   }
-  html += '</tbody></table></div></div>';
-  return html;
+  h += '</tbody></table></div></div>';
+  return h;
 }
 
 function updateDropdowns(storages, bridges) {
@@ -392,52 +512,65 @@ function updateDropdowns(storages, bridges) {
   }
 }
 
-/* ── Directory browser ── */
-async function browseDir() {
-  const path = document.getElementById('dirInput').value || '/';
-  await loadDirListing(path);
+/* ── File Browser Modal ── */
+function openFileBrowser() {
+  const modal = document.getElementById('fileBrowserModal');
+  modal.style.display = 'flex';
+  const start = document.getElementById('dirInput').value || '/';
+  document.getElementById('modalPathInput').value = start;
+  modalNavigate(start);
 }
 
-function loadFiles() {
-  const path = document.getElementById('dirInput').value;
-  if (path) window.location.href = '/?directory=' + encodeURIComponent(path);
+function closeFileBrowser() {
+  document.getElementById('fileBrowserModal').style.display = 'none';
 }
 
-async function loadDirListing(path) {
-  const box = document.getElementById('dirBrowser');
-  box.style.display = 'block';
-  box.innerHTML = '<p class="hint">Loading…</p>';
+function selectCurrentDir() {
+  const path = document.getElementById('modalPathInput').value;
+  document.getElementById('dirInput').value  = path;
+  document.getElementById('dirHidden').value = path;
+  closeFileBrowser();
+  scanVmdks();
+}
+
+async function modalNavigate(path) {
+  if (!path) path = '/';
+  document.getElementById('modalPathInput').value = path;
+  const listing = document.getElementById('modalListing');
+  listing.innerHTML = '<p style="padding:12px;color:var(--muted)">Loading…</p>';
   try {
     const r = await fetch('/api/browse-directory/?path=' + encodeURIComponent(path));
     const data = await r.json();
-    if (!data.ok) { box.innerHTML = `<div class="message error">${escHtml(data.error)}</div>`; return; }
-    document.getElementById('dirInput').value  = data.path;
-    document.getElementById('dirHidden').value = data.path;
-    const parentPath = data.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
-    let html = `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px;font-family:monospace">📁 ${escHtml(data.path)}</div>`;
-    html += '<div class="file-list" style="max-height:200px">';
-    if (data.path !== parentPath) {
-      html += `<div class="file-item" onclick="loadDirListing(${JSON.stringify(parentPath)})"><span>⬆ ..</span></div>`;
+    if (!data.ok) { listing.innerHTML = `<div style="padding:12px;color:var(--error)">${escHtml(data.error)}</div>`; return; }
+    document.getElementById('modalPathInput').value = data.path;
+    const parent = data.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
+    let html = '';
+    if (data.path !== parent) {
+      html += `<div class="file-item" onclick="modalNavigate(${JSON.stringify(parent)})" style="cursor:pointer"><span>⬆ <em style='color:var(--muted)'>..</em></span></div>`;
     }
     for (const f of data.folders) {
       const name = f.replace(/.*[\/\\]/, '');
-      html += `<div class="file-item" onclick="loadDirListing(${JSON.stringify(f)})"><span>📁 ${escHtml(name)}</span></div>`;
+      html += `<div class="file-item" onclick="modalNavigate(${JSON.stringify(f)})" style="cursor:pointer"><span>📁 <strong>${escHtml(name)}</strong></span></div>`;
     }
     for (const f of data.files) {
-      html += `<div class="file-item"><span>📄 ${escHtml(f.name)}</span></div>`;
+      const isVmdk = f.name.toLowerCase().endsWith('.vmdk');
+      const sizeGb = f.size ? ` — ${(f.size/1073741824).toFixed(1)} GB` : '';
+      const style = isVmdk ? 'color:#60a5fa;font-weight:600' : 'color:var(--muted)';
+      html += `<div class="file-item" style="cursor:default"><span style="${style}">📄 ${escHtml(f.name)}${escHtml(sizeGb)}</span></div>`;
     }
-    if (!data.folders.length && !data.files.length) html += '<p class="file-empty">Empty directory</p>';
-    html += '</div>';
-    html += `<div class="btn-row" style="margin-top:10px">
-      <button type="button" class="btn btn-primary btn-sm" onclick="loadFiles()">✓ Use This Directory</button>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('dirBrowser').style.display='none'">✕ Close</button>
-    </div>`;
-    box.innerHTML = html;
+    if (!data.folders.length && !data.files.length) html = '<p style="padding:12px;color:var(--muted)">Empty directory</p>';
+    listing.innerHTML = html;
   } catch(e) {
-    box.innerHTML = `<div class="message error">Browse failed: ${escHtml(e.message)}</div>`;
+    listing.innerHTML = `<div style="padding:12px;color:var(--error)">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
+/* close modal on backdrop click */
+document.getElementById('fileBrowserModal').addEventListener('click', function(e) {
+  if (e.target === this) closeFileBrowser();
+});
+
+/* ── Helpers ── */
 function escHtml(s)  { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s)  { return escHtml(s).replace(/"/g,'&quot;'); }
 </script>

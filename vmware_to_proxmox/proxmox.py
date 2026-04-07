@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import stat as stat_mod
 import subprocess
 import shutil
 from pathlib import Path
@@ -49,8 +50,13 @@ class ProxmoxClient:
         self.api_verify_ssl = api_verify_ssl
         self._proxmox_api: Any = None
 
+    _API_UNAVAILABLE = object()  # sentinel: tried and failed, don't retry
+
     def _api_client(self) -> Any:
-        """Return a proxmoxer ProxmoxAPI instance, or None if credentials are not configured."""
+        """Return a proxmoxer ProxmoxAPI instance, or None if unavailable.
+        Uses a sentinel to avoid retrying failed connections on every call."""
+        if self._proxmox_api is self._API_UNAVAILABLE:
+            return None
         if self._proxmox_api is not None:
             return self._proxmox_api
         host = self.api_host or self.ssh_host or self.node
@@ -59,7 +65,7 @@ class ProxmoxClient:
         try:
             from proxmoxer import ProxmoxAPI  # type: ignore[import-untyped]
             if self.api_token_name and self.api_token_value:
-                self._proxmox_api = ProxmoxAPI(
+                api = ProxmoxAPI(
                     host,
                     user=self.api_user,
                     token_name=self.api_token_name,
@@ -67,7 +73,7 @@ class ProxmoxClient:
                     verify_ssl=self.api_verify_ssl,
                 )
             elif self.ssh_password:
-                self._proxmox_api = ProxmoxAPI(
+                api = ProxmoxAPI(
                     host,
                     user=self.api_user,
                     password=self.ssh_password,
@@ -75,9 +81,12 @@ class ProxmoxClient:
                 )
             else:
                 return None
+            api.version.get()  # eagerly test connectivity
+            self._proxmox_api = api
             return self._proxmox_api
         except Exception as exc:  # noqa: BLE001
-            log.warning("Could not build Proxmox API client: %s", exc)
+            log.warning("Proxmox API unavailable (%s): will use SSH CLI fallback", exc)
+            self._proxmox_api = self._API_UNAVAILABLE  # type: ignore[assignment]
             return None
 
     def _run(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -325,3 +334,75 @@ class ProxmoxClient:
     def config_dump(self, vmid: int) -> str:
         proc = self._run(["qm", "config", str(vmid)])
         return proc.stdout
+
+    def list_remote_dir(self, remote_path: str) -> dict[str, Any]:
+        """List a directory on the Proxmox HOST via SFTP.
+        Returns {path, folders: [str], files: [{path, name, size}]}.
+        Falls back to local filesystem when SSH is not configured."""
+        if not self.ssh_enabled:
+            p = Path(remote_path)
+            if not p.exists():
+                return {"path": str(p), "folders": [], "files": []}
+            entries = sorted(p.iterdir())
+            return {
+                "path": str(p),
+                "folders": [str(e) for e in entries if e.is_dir()],
+                "files": [{"path": str(e), "name": e.name, "size": e.stat().st_size} for e in entries if e.is_file()],
+            }
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        connect_kwargs: dict[str, Any] = {
+            "hostname": self.ssh_host,
+            "port": self.ssh_port,
+            "username": self.ssh_username,
+        }
+        if self.ssh_private_key:
+            connect_kwargs["key_filename"] = self.ssh_private_key
+        elif self.ssh_password:
+            connect_kwargs["password"] = self.ssh_password
+        try:
+            client.connect(**connect_kwargs)
+            sftp = client.open_sftp()
+            try:
+                attrs = sftp.listdir_attr(remote_path)
+            except FileNotFoundError:
+                return {"path": remote_path, "folders": [], "files": []}
+            folders = []
+            files = []
+            for a in sorted(attrs, key=lambda x: x.filename):
+                full = remote_path.rstrip("/") + "/" + a.filename
+                if stat_mod.S_ISDIR(a.st_mode or 0):
+                    folders.append(full)
+                else:
+                    files.append({"path": full, "name": a.filename, "size": a.st_size or 0})
+            return {"path": remote_path, "folders": folders, "files": files}
+        finally:
+            client.close()
+
+    def read_remote_file(self, remote_path: str) -> str:
+        """Read a text file from the Proxmox HOST via SFTP. Returns empty string on error."""
+        if not self.ssh_enabled:
+            try:
+                return Path(remote_path).read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                return ""
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        connect_kwargs: dict[str, Any] = {
+            "hostname": self.ssh_host,
+            "port": self.ssh_port,
+            "username": self.ssh_username,
+        }
+        if self.ssh_private_key:
+            connect_kwargs["key_filename"] = self.ssh_private_key
+        elif self.ssh_password:
+            connect_kwargs["password"] = self.ssh_password
+        try:
+            client.connect(**connect_kwargs)
+            sftp = client.open_sftp()
+            with sftp.open(remote_path, "r") as fh:
+                return fh.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return ""
+        finally:
+            client.close()
