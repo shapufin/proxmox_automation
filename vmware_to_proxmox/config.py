@@ -9,6 +9,26 @@ import yaml
 from .models import DiskFormat, FirmwareMode
 
 
+def _coerce_int(value: Any, default: int) -> int:
+    if value in (None, ""):
+        return default
+    return int(value)
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 @dataclass(slots=True)
 class VmwareConfig:
     host: str
@@ -91,53 +111,53 @@ class AppConfig:
 
         return cls(
             vmware=VmwareConfig(
-                host=vmware["host"],
-                username=vmware["username"],
-                password=vmware["password"],
-                port=int(vmware.get("port", 443)),
+                host=str(vmware.get("host", "")),
+                username=str(vmware.get("username", "")),
+                password=str(vmware.get("password", "")),
+                port=_coerce_int(vmware.get("port", 443), 443),
                 datacenter=str(vmware.get("datacenter", "")),
-                allow_insecure_ssl=bool(vmware.get("allow_insecure_ssl", True)),
-                ssh_enabled=bool(vmware.get("ssh_enabled", True)),
-                ssh_port=int(vmware.get("ssh_port", 22)),
+                allow_insecure_ssl=_coerce_bool(vmware.get("allow_insecure_ssl", True), True),
+                ssh_enabled=_coerce_bool(vmware.get("ssh_enabled", True), True),
+                ssh_port=_coerce_int(vmware.get("ssh_port", 22), 22),
             ),
             proxmox=ProxmoxConfig(
-                node=proxmox["node"],
-                default_storage=proxmox["default_storage"],
-                default_bridge=proxmox["default_bridge"],
+                node=str(proxmox.get("node", "")),
+                default_storage=str(proxmox.get("default_storage", "")),
+                default_bridge=str(proxmox.get("default_bridge", "")),
                 bridge_map=dict(proxmox.get("bridge_map", {})),
                 format=DiskFormat(format_value),
                 boot_firmware=FirmwareMode(boot_value),
                 scsi_controller=str(proxmox.get("scsi_controller", "virtio-scsi-single")),
-                create_efi_disk=bool(proxmox.get("create_efi_disk", True)),
-                preserve_mac=bool(proxmox.get("preserve_mac", True)),
+                create_efi_disk=_coerce_bool(proxmox.get("create_efi_disk", True), True),
+                preserve_mac=_coerce_bool(proxmox.get("preserve_mac", True), True),
                 api_user=str(proxmox.get("api_user", "root@pam")),
                 api_token_name=str(proxmox.get("api_token_name", "")),
                 api_token_value=str(proxmox.get("api_token_value", "")),
-                ssh_enabled=bool(proxmox.get("ssh_enabled", False)),
+                ssh_enabled=_coerce_bool(proxmox.get("ssh_enabled", False), False),
                 ssh_host=str(proxmox.get("ssh_host", "")),
-                ssh_port=int(proxmox.get("ssh_port", 22)),
+                ssh_port=_coerce_int(proxmox.get("ssh_port", 22), 22),
                 ssh_username=str(proxmox.get("ssh_username", "root")),
                 ssh_private_key=str(proxmox.get("ssh_private_key", "")),
                 ssh_password=str(proxmox.get("ssh_password", "")),
             ),
             migration=MigrationConfig(
-                dry_run=bool(migration.get("dry_run", True)),
-                batch=bool(migration.get("batch", False)),
-                allow_snapshots=bool(migration.get("allow_snapshots", False)),
-                parallel_jobs=max(1, int(migration.get("parallel_jobs", 1))),
-                retry_attempts=max(1, int(migration.get("retry_attempts", 2))),
-                cleanup_source=bool(migration.get("cleanup_source", False)),
-                guest_remediation=bool(migration.get("guest_remediation", True)),
-                guest_rewrite_fstab=bool(migration.get("guest_rewrite_fstab", True)),
-                guest_install_qemu_agent=bool(migration.get("guest_install_qemu_agent", True)),
-                rollback_on_failure=bool(migration.get("rollback_on_failure", True)),
-                backup_source_manifest=bool(migration.get("backup_source_manifest", True)),
+                dry_run=_coerce_bool(migration.get("dry_run", True), True),
+                batch=_coerce_bool(migration.get("batch", False), False),
+                allow_snapshots=_coerce_bool(migration.get("allow_snapshots", False), False),
+                parallel_jobs=max(1, _coerce_int(migration.get("parallel_jobs", 1), 1)),
+                retry_attempts=max(1, _coerce_int(migration.get("retry_attempts", 2), 2)),
+                cleanup_source=_coerce_bool(migration.get("cleanup_source", False), False),
+                guest_remediation=_coerce_bool(migration.get("guest_remediation", True), True),
+                guest_rewrite_fstab=_coerce_bool(migration.get("guest_rewrite_fstab", True), True),
+                guest_install_qemu_agent=_coerce_bool(migration.get("guest_install_qemu_agent", True), True),
+                rollback_on_failure=_coerce_bool(migration.get("rollback_on_failure", True), True),
+                backup_source_manifest=_coerce_bool(migration.get("backup_source_manifest", True), True),
                 target_format_override=DiskFormat(override_value) if override_value else None,
             ),
             ssh=SshConfig(
-                enabled=bool(ssh.get("enabled", False)),
+                enabled=_coerce_bool(ssh.get("enabled", False), False),
                 host=str(ssh.get("host", "")),
-                port=int(ssh.get("port", 22)),
+                port=_coerce_int(ssh.get("port", 22), 22),
                 username=str(ssh.get("username", "root")),
                 private_key=str(ssh.get("private_key", "")),
                 password=str(ssh.get("password", "")),

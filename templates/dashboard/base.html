@@ -3,28 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>VMware to Proxmox</title>
+    <title>{% block title %}VMware → Proxmox Migration{% endblock %}</title>
     <link rel="stylesheet" href="/static/dashboard.css" />
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <div class="eyebrow">VMware to Proxmox</div>
-        <h1>Migration Control Center</h1>
+      <div class="topbar-brand">
+        <div class="eyebrow">Migration Tool</div>
+        <h1>VMware → Proxmox</h1>
       </div>
       <nav class="nav">
-        <a href="/">Dashboard</a>
-        <a href="/browse/">Browse Disks</a>
-        <a href="/configs/">Configs</a>
+        <a href="/">🏠 Dashboard</a>
+        <a href="/browse/">📁 Browse Disks</a>
+        <a href="/configs/">⚙️ Configs</a>
       </nav>
     </header>
     <main class="container">
       {% if messages %}
-        <section class="messages">
+        <div class="messages">
           {% for message in messages %}
             <div class="message {{ message.tags }}">{{ message }}</div>
           {% endfor %}
-        </section>
+        </div>
       {% endif %}
       {% block content %}{% endblock %}
     </main>

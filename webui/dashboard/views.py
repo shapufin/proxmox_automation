@@ -42,6 +42,31 @@ def _job_form(directory: str = "", vm_choices: list[tuple[str, str]] | None = No
     return form
 
 
+def _proxmox_choice_items(inventory: dict[str, object]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    storage_choices: list[tuple[str, str]] = []
+    for item in inventory.get("proxmox_storages", []):
+        if isinstance(item, dict):
+            storage_name = str(item.get("storage", "")).strip()
+            if storage_name:
+                label = storage_name
+                content = str(item.get("content", "")).strip()
+                if content:
+                    label = f"{storage_name} ({content})"
+                storage_choices.append((storage_name, label))
+
+    bridge_choices: list[tuple[str, str]] = []
+    for item in inventory.get("proxmox_bridges", []):
+        if isinstance(item, dict):
+            bridge_name = str(item.get("name", "")).strip()
+            if bridge_name:
+                label = bridge_name
+                if item.get("vlan_aware"):
+                    label = f"{bridge_name} (VLAN aware)"
+                bridge_choices.append((bridge_name, label))
+
+    return storage_choices, bridge_choices
+
+
 def _config_form(profile_name: str = "") -> ConfigProfileForm:
     content = load_config_profile(profile_name)
     form = ConfigProfileForm(initial={"name": profile_name, "content": content})
@@ -54,6 +79,9 @@ def _render_dashboard(
     inventory: dict[str, object],
     config_form: ConfigProfileForm | None = None,
 ) -> HttpResponse:
+    storage_choices, bridge_choices = _proxmox_choice_items(inventory)
+    form.set_storage_choices(storage_choices)
+    form.set_bridge_choices(bridge_choices)
     return render(
         request,
         "dashboard/index.html",
@@ -115,6 +143,9 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     form.set_source_choices(file_choice_items(stage_view["files"]))
     form.set_config_profile_choices(config_profile_choices())
     form.set_vm_choices(vm_choices)
+    storage_choices, bridge_choices = _proxmox_choice_items(inventory)
+    form.set_storage_choices(storage_choices)
+    form.set_bridge_choices(bridge_choices)
 
     if form.is_valid():
         job = MigrationJob.objects.create(

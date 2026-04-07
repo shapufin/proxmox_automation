@@ -23,8 +23,8 @@ class MigrationJobForm(forms.Form):
     config_profile = forms.ChoiceField(choices=(), required=False)
     vm_name = forms.ChoiceField(choices=(), required=False)
     manifest_path = forms.CharField(max_length=1024, required=False)
-    storage = forms.CharField(max_length=255, required=False)
-    bridge = forms.CharField(max_length=255, required=False)
+    storage = forms.ChoiceField(choices=(), required=False)
+    bridge = forms.ChoiceField(choices=(), required=False)
     disk_format = forms.ChoiceField(choices=[("", "Auto"), ("qcow2", "qcow2"), ("raw", "raw")], required=False)
     dry_run = forms.BooleanField(required=False, initial=True)
     start_after_import = forms.BooleanField(required=False, initial=True)
@@ -38,6 +38,12 @@ class MigrationJobForm(forms.Form):
 
     def set_vm_choices(self, choices: list[tuple[str, str]]) -> None:
         self.fields["vm_name"].choices = [("", "Select a VMware VM")] + choices
+
+    def set_storage_choices(self, choices: list[tuple[str, str]]) -> None:
+        self.fields["storage"].choices = [("", "Auto-select storage")] + choices
+
+    def set_bridge_choices(self, choices: list[tuple[str, str]]) -> None:
+        self.fields["bridge"].choices = [("", "Auto-select bridge")] + choices
 
     def normalized_source_paths(self) -> list[str]:
         values = self.cleaned_data.get("source_paths", [])

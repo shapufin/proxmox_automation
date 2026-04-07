@@ -1,131 +1,306 @@
 {% extends "dashboard/base.html" %}
+{% block title %}Dashboard — VMware → Proxmox{% endblock %}
 
 {% block content %}
-<section class="grid two-up">
-  <article class="panel">
-    <h2>Inventory</h2>
-    <h3>VMware VMs</h3>
-    <ul class="list">
-      {% for vm in inventory.vmware_vms %}
-        <li>{{ vm }}</li>
-      {% empty %}
-        <li>No VMware VMs found.</li>
-      {% endfor %}
-    </ul>
-    <h3>Proxmox Storages</h3>
-    <ul class="list">
-      {% for storage in inventory.proxmox_storages %}
-        <li>{{ storage.storage }} — {{ storage.content }}</li>
-      {% empty %}
-        <li>No storages found.</li>
-      {% endfor %}
-    </ul>
-    <h3>Proxmox Bridges</h3>
-    <ul class="list">
-      {% for bridge in inventory.proxmox_bridges %}
-        <li>{{ bridge.name }}{% if bridge.vlan_aware %} (VLAN aware){% endif %}</li>
-      {% empty %}
-        <li>No bridges found.</li>
-      {% endfor %}
-    </ul>
-  </article>
 
-  <article class="panel">
-    <h2>Launch Migration Job</h2>
-    <p class="hint">Selected config profiles are stored as YAML files in the GUI config directory. You can edit them from the <a href="/configs/">Configs</a> page.</p>
-    <form method="get" action="/" class="form inline" style="margin-bottom: 18px;">
-      <label>
-        Staging directory
-        <input type="text" name="directory" value="{{ form.directory.value|default:'' }}" placeholder="/data/staging/vm-01" />
-      </label>
-      <button type="submit" class="primary">Load Disks</button>
-    </form>
+{# ── STATUS OVERVIEW ── #}
+<div class="status-grid">
+  <div class="status-card">
+    <div class="label">VMware VMs</div>
+    <div class="value {% if inventory.vmware_vms %}ok{% else %}off{% endif %}">
+      {{ inventory.vmware_vms|length }} found
+    </div>
+  </div>
+  <div class="status-card">
+    <div class="label">Proxmox Storages</div>
+    <div class="value {% if inventory.proxmox_storages %}ok{% else %}off{% endif %}">
+      {{ inventory.proxmox_storages|length }} found
+    </div>
+  </div>
+  <div class="status-card">
+    <div class="label">Proxmox Bridges</div>
+    <div class="value {% if inventory.proxmox_bridges %}ok{% else %}off{% endif %}">
+      {{ inventory.proxmox_bridges|length }} found
+    </div>
+  </div>
+  <div class="status-card">
+    <div class="label">Jobs Run</div>
+    <div class="value">{{ jobs|length }}</div>
+  </div>
+</div>
 
-    <form method="post" action="/launch/" class="form">
+{# ── MAIN GRID ── #}
+<div class="grid two-up">
+
+  {# LEFT — INVENTORY SIDEBAR #}
+  <aside>
+    <div class="panel">
+      <div class="panel-title"><span class="icon">🖥️</span> VMware VMs</div>
+      {% if inventory.vmware_vms %}
+        <ul class="inv-list">
+          {% for vm in inventory.vmware_vms %}
+            <li class="inv-item"><span class="dot green"></span>{{ vm }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="inv-empty">No VMware VMs found.<br><span>Configure VMware credentials in <a href="/configs/">Configs</a> to see them here.</span></p>
+      {% endif %}
+    </div>
+
+    <div class="panel gap-top">
+      <div class="panel-title"><span class="icon">💾</span> Proxmox Storages</div>
+      {% if inventory.proxmox_storages %}
+        <ul class="inv-list">
+          {% for s in inventory.proxmox_storages %}
+            <li class="inv-item">
+              <span class="dot {% if s.active %}green{% else %}off{% endif %}"></span>
+              <span>{{ s.storage }}</span>
+              {% if s.content %}<span style="color:var(--muted);font-size:0.78rem;margin-left:auto">{{ s.content }}</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="inv-empty">No storages found.<br><span>Configure Proxmox SSH in <a href="/configs/">Configs</a>.</span></p>
+      {% endif %}
+    </div>
+
+    <div class="panel gap-top">
+      <div class="panel-title"><span class="icon">🌐</span> Proxmox Bridges</div>
+      {% if inventory.proxmox_bridges %}
+        <ul class="inv-list">
+          {% for b in inventory.proxmox_bridges %}
+            <li class="inv-item">
+              <span class="dot blue"></span>
+              {{ b.name }}
+              {% if b.vlan_aware %}<span class="badge badge-info" style="margin-left:auto">VLAN</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="inv-empty">No bridges found.</p>
+      {% endif %}
+    </div>
+  </aside>
+
+  {# RIGHT — MIGRATION WIZARD #}
+  <section class="panel">
+    <div class="panel-title"><span class="icon">🚀</span> New Migration Job</div>
+    <p class="hint" style="margin-bottom:20px">
+      Follow the steps below. All fields have tooltips — hover over them to learn more.
+      Start with <strong>Dry Run ON</strong> to test safely before doing the real migration.
+    </p>
+
+    <form method="post" action="/launch/" class="wizard" id="migrationForm">
       {% csrf_token %}
       {{ form.directory.as_hidden }}
-      <p>
-        <label for="id_name">Job name</label>
-        {{ form.name }}
-        {{ form.name.errors }}
-      </p>
-      <p>
-        <label for="id_mode">Mode</label>
-        {{ form.mode }}
-      </p>
-      <p>
-        <label for="id_config_profile">Config profile</label>
-        {{ form.config_profile }}
-      </p>
-      <p>
-        <label for="id_vm_name">VM name</label>
-        {{ form.vm_name }}
-        {{ form.vm_name.errors }}
-      </p>
-      <p>
-        <label for="id_manifest_path">Manifest path</label>
-        {{ form.manifest_path }}
-        {{ form.manifest_path.errors }}
-      </p>
-      <p>
-        <label for="id_storage">Storage</label>
-        {{ form.storage }}
-      </p>
-      <p>
-        <label for="id_bridge">Bridge</label>
-        {{ form.bridge }}
-      </p>
-      <p>
-        <label for="id_disk_format">Disk format</label>
-        {{ form.disk_format }}
-      </p>
-      <p>
-        <label>
-          {{ form.dry_run }} Dry run
-        </label>
-      </p>
-      <p>
-        <label>
-          {{ form.start_after_import }} Start VM after import
-        </label>
-      </p>
-      <div class="panel nested">
-        <h3>Local disk selection</h3>
-        <p class="hint">Select one or more staged disk files from the loaded directory.</p>
-        {{ form.source_paths.errors }}
-        <div class="checkbox-list">
-          {% for choice in form.source_paths %}
-            <label class="checkbox-item">{{ choice.tag }} <span>{{ choice.choice_label }}</span></label>
-          {% empty %}
-            <p class="hint">No staged files found in the current directory.</p>
-          {% endfor %}
+
+      {# STEP 1 — NAME & MODE #}
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <div class="step-title">Name your job &amp; choose mode</div>
+          <div class="step-desc">Give this migration a recognisable name and pick how you want to migrate.</div>
+
+          <div class="field">
+            <label for="id_name">Job name <span style="color:var(--error)">*</span></label>
+            {{ form.name }}
+            <span class="help">Example: "web-server-01" or "db-prod-migration"</span>
+            {{ form.name.errors }}
+          </div>
+
+          <div class="field">
+            <label for="id_mode">Migration mode <span style="color:var(--error)">*</span></label>
+            {{ form.mode }}
+            <span class="help">
+              <strong>VMware direct</strong> — pulls the VM live from vCenter/ESXi. &nbsp;|&nbsp;
+              <strong>Local disks</strong> — imports VMDK files you already copied to the staging folder.
+            </span>
+          </div>
         </div>
       </div>
-      <div class="hint">For local mode, load the staging directory and select the disk files you copied to Proxmox.</div>
-      <button type="submit" class="primary">Create Job</button>
-    </form>
-  </article>
-</section>
 
-<section class="panel">
-  <h2>Recent Jobs</h2>
+      {# STEP 2 — CONFIG PROFILE #}
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <div class="step-title">Choose a config profile</div>
+          <div class="step-desc">
+            Config profiles hold your Proxmox and VMware credentials.
+            Create and edit them on the <a href="/configs/">⚙️ Configs</a> page.
+          </div>
+          <div class="field">
+            <label for="id_config_profile">Config profile</label>
+            {{ form.config_profile }}
+            <span class="help">Leave as "Default config" if you only have one config file.</span>
+          </div>
+        </div>
+      </div>
+
+      {# STEP 3 — SOURCE (VMware VM or local disks) #}
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <div class="step-title">Select the source</div>
+
+          {# VMware VM picker #}
+          <div class="field">
+            <label for="id_vm_name">VMware VM <span style="color:var(--muted);font-weight:400">(VMware mode only)</span></label>
+            {{ form.vm_name }}
+            <span class="help">Only visible when VMware credentials are configured and inventory loaded.</span>
+            {{ form.vm_name.errors }}
+          </div>
+
+          {# Local disk staging #}
+          <div class="field">
+            <label>Staging directory <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
+            <form method="get" action="/" style="display:flex;gap:8px;align-items:center">
+              <input type="text" name="directory" value="{{ form.directory.value|default:'' }}"
+                     placeholder="/data/staging/vm-01" style="flex:1;background:#0b1324;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:0.92rem" />
+              <button type="submit" class="btn btn-secondary btn-sm">📂 Load Files</button>
+            </form>
+            <span class="help">Type the path to the folder where you copied the VMDK files, then click Load Files.</span>
+          </div>
+
+          <div class="field">
+            <label for="id_manifest_path">Manifest file path <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
+            {{ form.manifest_path }}
+            <span class="help">Path to the JSON manifest file exported alongside the VMDK. Example: <code>/data/staging/vm-01/manifest.json</code></span>
+            {{ form.manifest_path.errors }}
+          </div>
+
+          <div class="field">
+            <label>Select disk files to import</label>
+            <span class="help" style="margin-bottom:8px;display:block">Tick every VMDK file that belongs to this VM.</span>
+            {{ form.source_paths.errors }}
+            <div class="file-list">
+              {% for choice in form.source_paths %}
+                <label class="file-item">{{ choice.tag }}<span>{{ choice.choice_label }}</span></label>
+              {% empty %}
+                <p class="file-empty">No files found yet — load a staging directory above first.</p>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {# STEP 4 — DESTINATION #}
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <div class="step-title">Choose destination on Proxmox</div>
+          <div class="step-desc">Pick the storage pool and network bridge. Leave on Auto to let Proxmox decide.</div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="id_storage">Storage pool</label>
+              {{ form.storage }}
+              <span class="help">Where to store the VM disk on Proxmox.</span>
+            </div>
+            <div class="field">
+              <label for="id_bridge">Network bridge</label>
+              {{ form.bridge }}
+              <span class="help">The virtual switch the VM will connect to.</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="id_disk_format">Disk format</label>
+            {{ form.disk_format }}
+            <span class="help"><strong>Auto</strong> uses qcow2 by default. Use raw for maximum performance.</span>
+          </div>
+        </div>
+      </div>
+
+      {# STEP 5 — OPTIONS #}
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <div class="step-title">Safety options</div>
+          <div class="step-desc">Keep Dry Run ON when testing. Turn it OFF only when you are ready for the real migration.</div>
+
+          <label class="toggle-row highlight">
+            <input type="checkbox" name="dry_run" id="id_dry_run" {% if form.dry_run.value %}checked{% endif %}>
+            <div class="toggle-label">
+              <strong>🔒 Dry Run (Recommended)</strong>
+              <span>Simulates the migration without making any changes. Safe to run anytime.</span>
+            </div>
+          </label>
+
+          <label class="toggle-row">
+            <input type="checkbox" name="start_after_import" id="id_start_after_import" {% if form.start_after_import.value %}checked{% endif %}>
+            <div class="toggle-label">
+              <strong>▶️ Start VM after import</strong>
+              <span>Automatically power on the VM on Proxmox once the import finishes.</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      {# SUBMIT #}
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">🚀 Create Migration Job</button>
+        <a href="/" class="btn btn-secondary">↺ Reset</a>
+      </div>
+    </form>
+  </section>
+</div>
+
+{# ── RECENT JOBS ── #}
+<div class="panel gap-top">
+  <div class="section-header">
+    <div class="panel-title" style="border:none;margin:0;padding:0">
+      <span class="icon">📋</span> Recent Jobs
+    </div>
+    <span class="hint">Click a job ID to see full details and logs.</span>
+  </div>
   <table class="table">
     <thead>
-      <tr><th>ID</th><th>Name</th><th>Mode</th><th>Status</th><th>Updated</th></tr>
+      <tr>
+        <th>ID</th>
+        <th>Job Name</th>
+        <th>Mode</th>
+        <th>Dry Run</th>
+        <th>Status</th>
+        <th>Last Updated</th>
+      </tr>
     </thead>
     <tbody>
       {% for job in jobs %}
         <tr>
           <td><a href="/jobs/{{ job.id }}/">{{ job.id }}</a></td>
           <td>{{ job.name }}</td>
-          <td>{{ job.mode }}</td>
-          <td>{{ job.status }}</td>
-          <td>{{ job.updated_at }}</td>
+          <td>
+            {% if job.mode == "vmware" %}
+              <span class="badge badge-info">VMware Direct</span>
+            {% else %}
+              <span class="badge badge-muted">Local Disks</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if job.dry_run %}
+              <span class="badge badge-warning">Dry Run</span>
+            {% else %}
+              <span class="badge badge-error">Live</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if job.status == "succeeded" %}
+              <span class="badge badge-success">✓ Succeeded</span>
+            {% elif job.status == "failed" %}
+              <span class="badge badge-error">✗ Failed</span>
+            {% elif job.status == "running" %}
+              <span class="badge badge-info">⟳ Running</span>
+            {% else %}
+              <span class="badge badge-muted">Pending</span>
+            {% endif %}
+          </td>
+          <td style="color:var(--muted);font-size:0.85rem">{{ job.updated_at|date:"Y-m-d H:i" }}</td>
         </tr>
       {% empty %}
-        <tr><td colspan="5">No jobs yet.</td></tr>
+        <tr class="no-data"><td colspan="6">No jobs yet. Create your first migration above. 👆</td></tr>
       {% endfor %}
     </tbody>
   </table>
-</section>
+</div>
+
 {% endblock %}
