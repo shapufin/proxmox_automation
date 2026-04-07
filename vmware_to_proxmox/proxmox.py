@@ -488,6 +488,50 @@ class ProxmoxClient:
         self._run(cmd)
         return dest_dir
 
+    def peek_archive(self, remote_archive: str) -> list[str]:
+        """Return a list of filenames inside a remote archive (SSH, no extraction).
+
+        Supports .zip (unzip -l), .7z (7z l), .tar/.tar.gz etc. (tar -tf).
+        Returns an empty list when the type is unrecognised or the command fails.
+        """
+        from .disk import detect_archive_type
+        atype = detect_archive_type(remote_archive)
+        if atype is None:
+            return []
+        if atype == "zip":
+            cmd = ["unzip", "-l", remote_archive]
+            parse = "zip"
+        elif atype == "7z":
+            cmd = ["7z", "l", "-ba", remote_archive]
+            parse = "7z"
+        else:
+            # all tar variants
+            cmd = ["tar", "-tf", remote_archive]
+            parse = "tar"
+
+        try:
+            out = self._run(cmd)
+        except Exception:  # noqa: BLE001
+            return []
+
+        lines = out.splitlines()
+        filenames: list[str] = []
+        if parse == "tar":
+            filenames = [l.strip() for l in lines if l.strip()]
+        elif parse == "zip":
+            # skip header/footer lines; entries look like "  length  date  time  name"
+            for line in lines[3:]:
+                parts = line.split()
+                if len(parts) >= 4:
+                    filenames.append(parts[-1])
+        elif parse == "7z":
+            # 7z -ba lists: "attr  size  date time  name"
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 5:
+                    filenames.append(parts[-1])
+        return filenames
+
     def remove_remote_dir(self, remote_dir: str) -> None:
         """Recursively delete a directory on the Proxmox HOST via SSH.
 

@@ -1,0 +1,136 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Hosts — VMware → Proxmox{% endblock %}
+{% block nav_hosts %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Host Connections</div>
+    <div class="page-subtitle">Register Proxmox and VMware hosts once — select them in the wizard when migrating.</div>
+  </div>
+</div>
+
+{% if messages %}
+  {% for message in messages %}
+    <div class="message {{ message.tags }}">{{ message }}</div>
+  {% endfor %}
+{% endif %}
+
+{# ── Proxmox Hosts ── #}
+<div class="panel" style="margin-bottom:24px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <div class="panel-title" style="margin:0">🖥 Proxmox Hosts</div>
+    <button class="btn btn-primary btn-sm" onclick="showForm('proxmox-form','proxmox-list')">+ Add Proxmox Host</button>
+  </div>
+
+  <div id="proxmox-list">
+    {% if proxmox_hosts %}
+    <table class="table">
+      <thead><tr><th>Label</th><th>Node</th><th>API Host</th><th>SSH</th><th>Default Storage</th><th>Default Bridge</th><th></th></tr></thead>
+      <tbody>
+        {% for h in proxmox_hosts %}
+        <tr>
+          <td><strong>{{ h.label }}</strong></td>
+          <td style="font-family:monospace">{{ h.node }}</td>
+          <td style="font-family:monospace">{{ h.api_host }}</td>
+          <td>{% if h.ssh_enabled %}<span class="badge badge-info">{{ h.ssh_host }}:{{ h.ssh_port }}</span>{% else %}<span style="color:var(--muted)">off</span>{% endif %}</td>
+          <td>{{ h.default_storage|default:"—" }}</td>
+          <td>{{ h.default_bridge|default:"—" }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a href="{% url 'dashboard:test_proxmox_host' h.id %}" class="btn btn-secondary btn-sm">🔌 Test</a>
+            <a href="{% url 'dashboard:edit_proxmox_host' h.id %}" class="btn btn-secondary btn-sm">✏ Edit</a>
+            <form method="post" action="{% url 'dashboard:delete_proxmox_host' h.id %}" style="display:inline" onsubmit="return confirm('Delete {{ h.label }}?')">
+              {% csrf_token %}<button type="submit" class="btn btn-sm" style="background:var(--error);color:#fff">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="file-empty">No Proxmox hosts registered yet.</p>
+    {% endif %}
+  </div>
+
+  <div id="proxmox-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+    <div class="panel-title" style="margin-bottom:14px">{{ proxmox_edit.instance.pk|yesno:"Edit,Add" }} Proxmox Host</div>
+    <form method="post" action="{% url 'dashboard:save_proxmox_host' %}">
+      {% csrf_token %}
+      {% if proxmox_edit.instance.pk %}<input type="hidden" name="host_id" value="{{ proxmox_edit.instance.pk }}">{% endif %}
+      {{ proxmox_edit.as_div }}
+      <div class="wz-actions" style="margin-top:16px">
+        <button type="submit" class="btn btn-primary">💾 Save Proxmox Host</button>
+        <button type="button" class="btn btn-secondary" onclick="hideForm('proxmox-form','proxmox-list')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── VMware Hosts ── #}
+<div class="panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <div class="panel-title" style="margin:0">☁ VMware Hosts</div>
+    <button class="btn btn-primary btn-sm" onclick="showForm('vmware-form','vmware-list')">+ Add VMware Host</button>
+  </div>
+
+  <div id="vmware-list">
+    {% if vmware_hosts %}
+    <table class="table">
+      <thead><tr><th>Label</th><th>Host</th><th>Username</th><th>Port</th><th></th></tr></thead>
+      <tbody>
+        {% for h in vmware_hosts %}
+        <tr>
+          <td><strong>{{ h.label }}</strong></td>
+          <td style="font-family:monospace">{{ h.host }}</td>
+          <td>{{ h.username }}</td>
+          <td>{{ h.port }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a href="{% url 'dashboard:test_vmware_host' h.id %}" class="btn btn-secondary btn-sm">🔌 Test</a>
+            <a href="{% url 'dashboard:edit_vmware_host' h.id %}" class="btn btn-secondary btn-sm">✏ Edit</a>
+            <form method="post" action="{% url 'dashboard:delete_vmware_host' h.id %}" style="display:inline" onsubmit="return confirm('Delete {{ h.label }}?')">
+              {% csrf_token %}<button type="submit" class="btn btn-sm" style="background:var(--error);color:#fff">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="file-empty">No VMware hosts registered yet.</p>
+    {% endif %}
+  </div>
+
+  <div id="vmware-form" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+    <div class="panel-title" style="margin-bottom:14px">{{ vmware_edit.instance.pk|yesno:"Edit,Add" }} VMware Host</div>
+    <form method="post" action="{% url 'dashboard:save_vmware_host' %}">
+      {% csrf_token %}
+      {% if vmware_edit.instance.pk %}<input type="hidden" name="host_id" value="{{ vmware_edit.instance.pk }}">{% endif %}
+      {{ vmware_edit.as_div }}
+      <div class="wz-actions" style="margin-top:16px">
+        <button type="submit" class="btn btn-primary">💾 Save VMware Host</button>
+        <button type="button" class="btn btn-secondary" onclick="hideForm('vmware-form','vmware-list')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="host-page-flags"
+     data-show-proxmox="{{ show_proxmox_form|yesno:'1,0' }}"
+     data-show-vmware="{{ show_vmware_form|yesno:'1,0' }}"
+     style="display:none"></div>
+<script>
+function showForm(formId, listId) {
+  document.getElementById(formId).style.display = '';
+  document.getElementById(listId).style.display = 'none';
+}
+function hideForm(formId, listId) {
+  document.getElementById(formId).style.display = 'none';
+  document.getElementById(listId).style.display = '';
+}
+(function() {
+  const flags = document.getElementById('host-page-flags');
+  if (flags.dataset.showProxmox === '1') showForm('proxmox-form', 'proxmox-list');
+  if (flags.dataset.showVmware  === '1') showForm('vmware-form',  'vmware-list');
+})();
+</script>
+{% endblock %}

@@ -12,8 +12,8 @@ from django.views.decorators.http import require_GET, require_POST
 
 from vmware_to_proxmox.models import DiskFormat
 
-from .forms import ConfigProfileForm, DiskBrowseForm, MigrationJobForm
-from .models import JobStatus, MigrationJob, MigrationMode
+from .forms import ConfigProfileForm, DiskBrowseForm, MigrationJobForm, ProxmoxHostForm, VMwareHostForm
+from .models import JobStatus, MigrationJob, MigrationMode, ProxmoxHost, VMwareHost
 from .services import (
     config_profile_choices,
     execute_job,
@@ -107,17 +107,34 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     inventory = _empty_inventory()
     try:
         engine = get_engine()
-        inventory = engine.inventory()
+        # Query Proxmox first (storages + bridges) independently of VMware
+        try:
+            inventory["proxmox_storages"] = [
+                {"storage": s.storage, "content": s.content, "type": s.storage_type, "active": s.active}
+                for s in engine.proxmox.list_storages()
+            ]
+            inventory["proxmox_bridges"] = [
+                {"name": b.name, "active": b.active, "vlan_aware": b.vlan_aware}
+                for b in engine.proxmox.list_bridges()
+            ]
+        except Exception as pve_exc:  # noqa: BLE001
+            err = str(pve_exc)
+            if any(k in err for k in ("Name or service not known", "nodename nor servname", "Connect call failed", "Connection refused", "timed out")):
+                messages.warning(
+                    request,
+                    "Proxmox host is not reachable yet. Set proxmox.api_host (IP address) and "
+                    "proxmox.ssh_host in config.yaml, then click \u22ef Test & Refresh.",
+                )
+            else:
+                messages.warning(request, f"Proxmox inventory unavailable: {pve_exc}")
+        # VMware VMs — failure is silent (VMware may not be configured)
+        try:
+            with engine.vmware:
+                inventory["vmware_vms"] = engine.vmware.list_vms()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
-        err = str(exc)
-        if "Name or service not known" in err or "nodename nor servname" in err or "Connect call failed" in err:
-            messages.warning(
-                request,
-                "Proxmox host is not reachable yet. Set proxmox.api_host (IP address) and "
-                "proxmox.ssh_host in config.yaml, then click \u22ef Test & Refresh.",
-            )
-        else:
-            messages.warning(request, f"Inventory is unavailable right now: {exc}")
+        messages.warning(request, f"Configuration error: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     return _render_dashboard(request, _job_form(directory, vm_choices), inventory, _config_form(profile_name))
 
@@ -162,6 +179,12 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     form.set_bridge_choices(bridge_choices)
 
     if form.is_valid():
+        def _parse_json_field(raw: str) -> dict:
+            try:
+                v = json.loads(raw or "{}")
+                return v if isinstance(v, dict) else {}
+            except Exception:
+                return {}
         job = MigrationJob.objects.create(
             name=form.cleaned_data["name"],
             mode=form.cleaned_data["mode"],
@@ -172,6 +195,10 @@ def launch_job(request: HttpRequest) -> HttpResponse:
             storage=form.cleaned_data.get("storage", ""),
             bridge=form.cleaned_data.get("bridge", ""),
             disk_format=form.cleaned_data.get("disk_format", ""),
+            disk_storage_map=_parse_json_field(form.cleaned_data.get("disk_storage_map", "")),
+            nic_bridge_map=_parse_json_field(form.cleaned_data.get("nic_bridge_map", "")),
+            proxmox_host=ProxmoxHost.objects.filter(pk=form.cleaned_data.get("proxmox_host_id") or 0).first(),
+            vmware_host=VMwareHost.objects.filter(pk=form.cleaned_data.get("vmware_host_id") or 0).first(),
             dry_run=bool(form.cleaned_data.get("dry_run", False)),
             start_after_import=bool(form.cleaned_data.get("start_after_import", True)),
             status=JobStatus.PENDING,
@@ -306,9 +333,11 @@ def wizard(request: HttpRequest) -> HttpResponse:
         request,
         "dashboard/wizard.html",
         {
-            "config_profiles": list_config_profiles(),
+            "config_profiles":  list_config_profiles(),
             "selected_profile": profile_name,
             "disk_format_choices": [("", "Auto (qcow2)"), ("qcow2", "qcow2"), ("raw", "raw")],
+            "proxmox_hosts": list(ProxmoxHost.objects.values("id", "label", "node", "api_host", "default_storage", "default_bridge")),
+            "vmware_hosts":  list(VMwareHost.objects.values("id", "label", "host")),
         },
     )
 
@@ -399,3 +428,182 @@ def vmdk_scan(request: HttpRequest) -> JsonResponse:
         })
     except Exception as exc:  # noqa: BLE001
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+
+
+@require_GET
+def peek_archive(request: HttpRequest) -> JsonResponse:
+    """List contents of a remote archive via SSH and return VMX specs + VMDK names."""
+    archive_path = request.GET.get("path", "").strip()
+    if not archive_path:
+        return JsonResponse({"ok": False, "error": "path parameter required"})
+    try:
+        engine = get_engine()
+        filenames = engine.proxmox.peek_archive(archive_path)
+        vmdks: list[str] = []
+        vmx_specs: dict = {}
+        for name in filenames:
+            lower = name.lower()
+            if lower.endswith(".vmdk") and "-flat" not in lower:
+                vmdks.append(name)
+            elif lower.endswith(".vmx") and not vmx_specs:
+                # Try to read the VMX from inside the archive
+                # Only feasible for zip; for others we skip (too complex without extract)
+                try:
+                    from vmware_to_proxmox.disk import parse_vmx, detect_archive_type
+                    atype = detect_archive_type(archive_path)
+                    if atype == "zip":
+                        out = engine.proxmox._run(["unzip", "-p", archive_path, name])
+                        parsed = parse_vmx(out)
+                        vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
+                    elif atype == "7z":
+                        out = engine.proxmox._run(["7z", "e", "-so", archive_path, name])
+                        parsed = parse_vmx(out)
+                        vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
+                except Exception:  # noqa: BLE001
+                    pass
+        return JsonResponse({"ok": True, "filenames": filenames, "vmdks": vmdks, "vmx_specs": vmx_specs})
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Host management views
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hosts(request: HttpRequest) -> HttpResponse:
+    return render(request, "dashboard/hosts.html", {
+        "proxmox_hosts":     ProxmoxHost.objects.all(),
+        "vmware_hosts":      VMwareHost.objects.all(),
+        "proxmox_edit":      ProxmoxHostForm(),
+        "vmware_edit":       VMwareHostForm(),
+        "show_proxmox_form": False,
+        "show_vmware_form":  False,
+    })
+
+
+def edit_proxmox_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    host = get_object_or_404(ProxmoxHost, pk=host_id)
+    return render(request, "dashboard/hosts.html", {
+        "proxmox_hosts":     ProxmoxHost.objects.all(),
+        "vmware_hosts":      VMwareHost.objects.all(),
+        "proxmox_edit":      ProxmoxHostForm(instance=host),
+        "vmware_edit":       VMwareHostForm(),
+        "show_proxmox_form": True,
+        "show_vmware_form":  False,
+    })
+
+
+def edit_vmware_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    host = get_object_or_404(VMwareHost, pk=host_id)
+    return render(request, "dashboard/hosts.html", {
+        "proxmox_hosts":     ProxmoxHost.objects.all(),
+        "vmware_hosts":      VMwareHost.objects.all(),
+        "proxmox_edit":      ProxmoxHostForm(),
+        "vmware_edit":       VMwareHostForm(instance=host),
+        "show_proxmox_form": False,
+        "show_vmware_form":  True,
+    })
+
+
+@require_POST
+def save_proxmox_host(request: HttpRequest) -> HttpResponse:
+    host_id = request.POST.get("host_id")
+    instance = get_object_or_404(ProxmoxHost, pk=host_id) if host_id else None
+    form = ProxmoxHostForm(request.POST, instance=instance)
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"Proxmox host '{form.cleaned_data['label']}' saved.")
+        return redirect("dashboard:hosts")
+    return render(request, "dashboard/hosts.html", {
+        "proxmox_hosts":     ProxmoxHost.objects.all(),
+        "vmware_hosts":      VMwareHost.objects.all(),
+        "proxmox_edit":      form,
+        "vmware_edit":       VMwareHostForm(),
+        "show_proxmox_form": True,
+        "show_vmware_form":  False,
+    })
+
+
+@require_POST
+def save_vmware_host(request: HttpRequest) -> HttpResponse:
+    host_id = request.POST.get("host_id")
+    instance = get_object_or_404(VMwareHost, pk=host_id) if host_id else None
+    form = VMwareHostForm(request.POST, instance=instance)
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"VMware host '{form.cleaned_data['label']}' saved.")
+        return redirect("dashboard:hosts")
+    return render(request, "dashboard/hosts.html", {
+        "proxmox_hosts":     ProxmoxHost.objects.all(),
+        "vmware_hosts":      VMwareHost.objects.all(),
+        "proxmox_edit":      ProxmoxHostForm(),
+        "vmware_edit":       form,
+        "show_proxmox_form": False,
+        "show_vmware_form":  True,
+    })
+
+
+@require_POST
+def delete_proxmox_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    host = get_object_or_404(ProxmoxHost, pk=host_id)
+    label = host.label
+    host.delete()
+    messages.success(request, f"Proxmox host '{label}' deleted.")
+    return redirect("dashboard:hosts")
+
+
+@require_POST
+def delete_vmware_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    host = get_object_or_404(VMwareHost, pk=host_id)
+    label = host.label
+    host.delete()
+    messages.success(request, f"VMware host '{label}' deleted.")
+    return redirect("dashboard:hosts")
+
+
+def test_proxmox_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    from vmware_to_proxmox.proxmox import ProxmoxClient
+    host = get_object_or_404(ProxmoxHost, pk=host_id)
+    client = ProxmoxClient(
+        node=host.node,
+        ssh_enabled=host.ssh_enabled,
+        ssh_host=host.ssh_host or host.api_host,
+        ssh_port=host.ssh_port,
+        ssh_username=host.ssh_username,
+        ssh_private_key=host.ssh_private_key,
+        ssh_password=host.ssh_password,
+        api_host=host.api_host,
+        api_user=host.api_user,
+        api_token_name=host.api_token_name,
+        api_token_value=host.api_token_value,
+        api_verify_ssl=host.api_verify_ssl,
+    )
+    try:
+        storages = client.list_storages()
+        bridges  = client.list_bridges()
+        messages.success(
+            request,
+            f"\u2713 Connected to '{host.label}': {len(storages)} storage(s), {len(bridges)} network(s).",
+        )
+    except Exception as exc:  # noqa: BLE001
+        messages.error(request, f"\u2717 Connection to '{host.label}' failed: {exc}")
+    return redirect("dashboard:hosts")
+
+
+def test_vmware_host(request: HttpRequest, host_id: int) -> HttpResponse:
+    from vmware_to_proxmox.vmware import VmwareClient
+    host = get_object_or_404(VMwareHost, pk=host_id)
+    client = VmwareClient(
+        host=host.host,
+        username=host.username,
+        password=host.password,
+        port=host.port,
+        allow_insecure_ssl=host.allow_insecure_ssl,
+    )
+    try:
+        with client:
+            vms = client.list_vms()
+        messages.success(request, f"\u2713 Connected to '{host.label}': {len(vms)} VM(s) visible.")
+    except Exception as exc:  # noqa: BLE001
+        messages.error(request, f"\u2717 Connection to '{host.label}' failed: {exc}")
+    return redirect("dashboard:hosts")

@@ -19,4 +19,15 @@ urlpatterns = [
     path("api/vmware-vms/", views.vmware_vms, name="vmware_vms"),
     path("api/browse-directory/", views.browse_directory, name="browse_directory"),
     path("api/vmdk-scan/", views.vmdk_scan, name="vmdk_scan"),
+    path("api/peek-archive/", views.peek_archive, name="peek_archive"),
+    # Host management
+    path("hosts/", views.hosts, name="hosts"),
+    path("hosts/proxmox/save/", views.save_proxmox_host, name="save_proxmox_host"),
+    path("hosts/proxmox/<int:host_id>/edit/", views.edit_proxmox_host, name="edit_proxmox_host"),
+    path("hosts/proxmox/<int:host_id>/delete/", views.delete_proxmox_host, name="delete_proxmox_host"),
+    path("hosts/proxmox/<int:host_id>/test/", views.test_proxmox_host, name="test_proxmox_host"),
+    path("hosts/vmware/save/", views.save_vmware_host, name="save_vmware_host"),
+    path("hosts/vmware/<int:host_id>/edit/", views.edit_vmware_host, name="edit_vmware_host"),
+    path("hosts/vmware/<int:host_id>/delete/", views.delete_vmware_host, name="delete_vmware_host"),
+    path("hosts/vmware/<int:host_id>/test/", views.test_vmware_host, name="test_vmware_host"),
 ]

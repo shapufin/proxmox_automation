@@ -60,16 +60,65 @@
         </span>
       </div>
 
+      {# Registered Proxmox host #}
       <div class="field">
-        <label for="wz_profile">Config profile</label>
-        <select id="wz_profile" class="form-select" onchange="syncField('config_profile', this.value)">
-          <option value="">Default config (config.yaml)</option>
-          {% for p in config_profiles %}
-            <option value="{{ p.stem }}" {% if selected_profile == p.stem %}selected{% endif %}>{{ p.stem }}</option>
-          {% endfor %}
-        </select>
-        <span class="help">Holds your Proxmox and VMware credentials. Manage them in <a href="/configs/">Config Profiles</a>.</span>
+        <label for="wz_proxmox_host">Proxmox host <span style="color:var(--error)">*</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="wz_proxmox_host" class="form-select" style="flex:1" onchange="onProxmoxHostChange(this.value)">
+            <option value="">— select a registered host —</option>
+            {% for h in proxmox_hosts %}
+              <option value="{{ h.id }}"
+                data-label="{{ h.label }}"
+                data-node="{{ h.node }}"
+                data-api="{{ h.api_host }}"
+                data-storage="{{ h.default_storage }}"
+                data-bridge="{{ h.default_bridge }}">
+                {{ h.label }} ({{ h.api_host|default:h.node }})
+              </option>
+            {% endfor %}
+          </select>
+          <a href="/hosts/" class="btn btn-secondary btn-sm" style="white-space:nowrap">+ Register</a>
+        </div>
+        {% if not proxmox_hosts %}
+          <div style="color:var(--warning);font-size:0.82rem;margin-top:4px">
+            No Proxmox hosts registered yet. <a href="/hosts/">Register one first →</a>
+          </div>
+        {% endif %}
+        <span class="help">Registered Proxmox connection. <a href="/hosts/">Manage hosts</a>.</span>
+        <div id="err_proxmox_host" style="color:var(--error);font-size:0.82rem;display:none"></div>
       </div>
+
+      {# VMware host — only shown in VMware mode #}
+      <div class="field" id="vmware-host-field" style="display:none">
+        <label for="wz_vmware_host">VMware host</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="wz_vmware_host" class="form-select" style="flex:1" onchange="onVmwareHostChange(this.value)">
+            <option value="">— select a registered host —</option>
+            {% for h in vmware_hosts %}
+              <option value="{{ h.id }}" data-label="{{ h.label }}" data-host="{{ h.host }}">
+                {{ h.label }} ({{ h.host }})
+              </option>
+            {% endfor %}
+          </select>
+          <a href="/hosts/" class="btn btn-secondary btn-sm" style="white-space:nowrap">+ Register</a>
+        </div>
+        <span class="help">VMware vCenter/ESXi host to pull the VM from. <a href="/hosts/">Manage hosts</a>.</span>
+      </div>
+
+      {# Legacy config profile fallback #}
+      <details style="margin-top:8px">
+        <summary style="font-size:0.82rem;color:var(--muted);cursor:pointer">Advanced: use a config.yaml profile instead</summary>
+        <div class="field" style="margin-top:10px">
+          <label for="wz_profile">Config profile</label>
+          <select id="wz_profile" class="form-select" onchange="syncField('config_profile', this.value)">
+            <option value="">Default config (config.yaml)</option>
+            {% for p in config_profiles %}
+              <option value="{{ p.stem }}" {% if selected_profile == p.stem %}selected{% endif %}>{{ p.stem }}</option>
+            {% endfor %}
+          </select>
+          <span class="help">Overrides registered host selection above. Leave blank when using registered hosts.</span>
+        </div>
+      </details>
 
       <div class="wz-actions">
         <button class="btn btn-primary" onclick="validateStep1()">Next: Select Source →</button>
@@ -147,23 +196,44 @@
 
       <div id="discover-result" style="margin-bottom:16px"></div>
 
-      <div class="field-row">
-        <div class="field">
-          <label for="wz_storage">Storage pool <span style="color:var(--error)">*</span></label>
-          <select id="wz_storage" class="form-select" onchange="syncField('storage', this.value)">
-            <option value="">— click Discover first —</option>
+      {# ── Default storage (used for all disks unless overridden per-disk) ── #}
+      <div class="field">
+        <label>Default storage pool <span style="color:var(--error)">*</span></label>
+        <div style="display:flex;gap:6px">
+          <select id="wz_storage" class="form-select" style="flex:1" onchange="onStorageSelect(this.value)">
+            <option value="">— click Discover or type below —</option>
           </select>
-          <span class="help">Where the imported VM disk will be stored on Proxmox.</span>
-          <div id="err_storage" style="color:var(--error);font-size:0.82rem;display:none"></div>
+          <input type="text" id="wz_storage_text" class="form-input" style="flex:1;min-width:120px"
+                 placeholder="e.g. local-lvm" oninput="syncField('storage', this.value)" />
         </div>
-        <div class="field">
-          <label for="wz_bridge">Network bridge / SDN vnet <span style="color:var(--error)">*</span></label>
-          <select id="wz_bridge" class="form-select" onchange="syncField('bridge', this.value)">
-            <option value="">— click Discover first —</option>
+        <span class="help">Where disks are imported. Select from discovered list <em>or</em> type any storage name manually.</span>
+        <div id="err_storage" style="color:var(--error);font-size:0.82rem;display:none"></div>
+      </div>
+
+      {# ── Per-disk storage override ── #}
+      <div id="per-disk-storage" style="display:none;margin-bottom:16px">
+        <div style="font-size:0.78rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px">Per-disk storage (overrides default)</div>
+        <div id="disk-storage-rows"></div>
+      </div>
+
+      {# ── Default bridge ── #}
+      <div class="field">
+        <label>Default network bridge / SDN vnet <span style="color:var(--error)">*</span></label>
+        <div style="display:flex;gap:6px">
+          <select id="wz_bridge" class="form-select" style="flex:1" onchange="onBridgeSelect(this.value)">
+            <option value="">— click Discover or type below —</option>
           </select>
-          <span class="help">The virtual network the VM will be connected to (bridges and SDN vnets both appear).</span>
-          <div id="err_bridge" style="color:var(--error);font-size:0.82rem;display:none"></div>
+          <input type="text" id="wz_bridge_text" class="form-input" style="flex:1;min-width:120px"
+                 placeholder="e.g. vmbr0" oninput="syncField('bridge', this.value)" />
         </div>
+        <span class="help">Bridge or SDN vnet for all NICs. Select from discovered list <em>or</em> type any name manually.</span>
+        <div id="err_bridge" style="color:var(--error);font-size:0.82rem;display:none"></div>
+      </div>
+
+      {# ── Per-NIC bridge override ── #}
+      <div id="per-nic-bridge" style="display:none;margin-bottom:16px">
+        <div style="font-size:0.78rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px">Per-NIC bridge assignment</div>
+        <div id="nic-bridge-rows"></div>
       </div>
 
       <div class="field">
@@ -264,6 +334,10 @@
   <input type="hidden" name="disk_format"      id="f_disk_format" value="">
   <input type="hidden" name="dry_run"          id="f_dry_run"     value="on">
   <input type="hidden" name="start_after_import" id="f_start"    value="on">
+  <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
+  <input type="hidden" name="nic_bridge_map"    id="f_nic_bridge_map"    value="{}">
+  <input type="hidden" name="proxmox_host_id"  id="f_proxmox_host_id"  value="">
+  <input type="hidden" name="vmware_host_id"   id="f_vmware_host_id"   value="">
   {# source_paths are added dynamically #}
 </form>
 
@@ -273,10 +347,15 @@
 ════════════════════════════════════════════ */
 const state = {
   name: '', mode: 'local', config_profile: '',
+  proxmox_host_id: '', vmware_host_id: '',
   vm_name: '', directory: '', manifest_path: '',
   storage: '', bridge: '', disk_format: '',  // '' = auto
   dry_run: true, start_after_import: true,
-  source_paths: [],   // array of host-absolute paths
+  source_paths: [],        // array of host-absolute paths
+  disk_storage_map: {},    // {path: storageId}  per-disk override
+  nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
+  _discoveredStorages: [],
+  _discoveredBridges:  [],
 };
 
 const STEPS = 4;
@@ -302,8 +381,33 @@ function gotoStep(n) {
 
 function onModeChange(val) {
   state.mode = val;
-  document.getElementById('src-vmware').style.display = val === 'vmware' ? 'block' : 'none';
-  document.getElementById('src-local').style.display  = val === 'local'  ? 'block' : 'none';
+  document.getElementById('src-vmware').style.display       = val === 'vmware' ? 'block' : 'none';
+  document.getElementById('src-local').style.display        = val === 'local'  ? 'block' : 'none';
+  document.getElementById('vmware-host-field').style.display = val === 'vmware' ? '' : 'none';
+}
+
+function onProxmoxHostChange(val) {
+  state.proxmox_host_id = val;
+  const opt = document.querySelector('#wz_proxmox_host option[value="' + val + '"]');
+  if (opt && opt.dataset) {
+    // Pre-fill default storage/bridge from the registered host
+    if (opt.dataset.storage) {
+      state.storage = opt.dataset.storage;
+      const txt = document.getElementById('wz_storage_text');
+      if (txt) txt.value = opt.dataset.storage;
+    }
+    if (opt.dataset.bridge) {
+      state.bridge = opt.dataset.bridge;
+      const txt = document.getElementById('wz_bridge_text');
+      if (txt) txt.value = opt.dataset.bridge;
+    }
+  }
+  updateSummary();
+}
+
+function onVmwareHostChange(val) {
+  state.vmware_host_id = val;
+  updateSummary();
 }
 
 /* ── Pre-fill from URL params ── */
@@ -333,12 +437,16 @@ function showErr(id, msg) {
   el.style.display = msg ? 'block' : 'none';
 }
 function clearErrors() {
-  ['err_name','err_vm_name','err_manifest','err_source','err_storage','err_bridge'].forEach(id => showErr(id,''));
+  ['err_name','err_vm_name','err_manifest','err_source','err_storage','err_bridge','err_proxmox_host'].forEach(id => showErr(id,''));
 }
 
 function validateStep1() {
   clearErrors();
   if (!state.name.trim()) { showErr('err_name', 'Job name is required.'); return; }
+  if (!state.proxmox_host_id && !state.config_profile) {
+    showErr('err_proxmox_host', 'Select a Proxmox host (or choose a config profile below).');
+    return;
+  }
   gotoStep(2);
 }
 
@@ -347,17 +455,92 @@ function validateStep2() {
   if (state.mode === 'vmware') {
     if (!state.vm_name) { showErr('err_vm_name', 'Select a VMware VM.'); return; }
   } else {
-    if (!state.manifest_path.trim()) { showErr('err_manifest', 'Manifest path is required (auto-detected after scan).'); return; }
-    if (!state.source_paths.length)  { showErr('err_source',   'Select at least one VMDK file.'); return; }
+    if (!state.source_paths.length) { showErr('err_source', 'Select at least one VMDK or archive file.'); return; }
   }
   gotoStep(3);
 }
 
+function onStorageSelect(val) {
+  if (val) {
+    document.getElementById('wz_storage_text').value = val;
+    syncField('storage', val);
+  }
+}
+function onBridgeSelect(val) {
+  if (val) {
+    document.getElementById('wz_bridge_text').value = val;
+    syncField('bridge', val);
+  }
+}
+
 function validateStep3() {
   clearErrors();
-  if (!state.storage) { showErr('err_storage', 'Choose a storage pool.'); return; }
-  if (!state.bridge)  { showErr('err_bridge',  'Choose a network bridge.'); return; }
+  // Accept either dropdown selection or freetext
+  const storageTxt = document.getElementById('wz_storage_text').value.trim();
+  const bridgeTxt  = document.getElementById('wz_bridge_text').value.trim();
+  if (storageTxt) state.storage = storageTxt;
+  if (bridgeTxt)  state.bridge  = bridgeTxt;
+  if (!state.storage) { showErr('err_storage', 'Enter or select a storage pool.'); return; }
+  if (!state.bridge)  { showErr('err_bridge',  'Enter or select a network bridge.'); return; }
   gotoStep(4);
+}
+
+function buildPerDiskRows(storages) {
+  const disks = state.source_paths;
+  if (disks.length <= 1) { document.getElementById('per-disk-storage').style.display = 'none'; return; }
+  document.getElementById('per-disk-storage').style.display = '';
+  const rows = document.getElementById('disk-storage-rows');
+  rows.innerHTML = '';
+  disks.forEach((path, i) => {
+    const name = path.split('/').pop();
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
+    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(path)}">💿 ${esc(name)}</span>`;
+    const sel = document.createElement('select');
+    sel.className = 'form-select';
+    sel.style.flex = '1';
+    sel.innerHTML = `<option value="">(default: ${esc(state.storage||'auto')})</option>`;
+    for (const s of storages) {
+      const o = document.createElement('option');
+      o.value = s.storage; o.textContent = `${s.storage} (${s.type||''} ${s.available_gb||0}GB free)`;
+      sel.appendChild(o);
+    }
+    const txt = document.createElement('input');
+    txt.type = 'text'; txt.className = 'form-input'; txt.style.flex = '1';
+    txt.placeholder = 'or type name';
+    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.disk_storage_map[path] = sel.value; } });
+    txt.addEventListener('input',  () => { state.disk_storage_map[path] = txt.value.trim() || undefined; });
+    row.appendChild(sel); row.appendChild(txt);
+    rows.appendChild(row);
+  });
+}
+
+function buildPerNicRows(bridges) {
+  const nics = state._vmxNetworks || [];
+  if (!nics.length) { document.getElementById('per-nic-bridge').style.display = 'none'; return; }
+  document.getElementById('per-nic-bridge').style.display = '';
+  const rows = document.getElementById('nic-bridge-rows');
+  rows.innerHTML = '';
+  nics.forEach((nic, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
+    row.innerHTML = `<span style="flex:2">NIC ${i} <span style="color:var(--muted)">(${esc(nic.network_name||'')} / ${esc(nic.adapter||'')})</span></span>`;
+    const sel = document.createElement('select');
+    sel.className = 'form-select'; sel.style.flex = '1';
+    sel.innerHTML = `<option value="">(default: ${esc(state.bridge||'auto')})</option>`;
+    for (const b of bridges) {
+      const o = document.createElement('option');
+      o.value = b.name; o.textContent = b.name + (b.vlan_aware ? ' [VLAN]' : '');
+      sel.appendChild(o);
+    }
+    const txt = document.createElement('input');
+    txt.type = 'text'; txt.className = 'form-input'; txt.style.flex = '1';
+    txt.placeholder = 'or type bridge';
+    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.nic_bridge_map[i] = sel.value; } });
+    txt.addEventListener('input',  () => { state.nic_bridge_map[i] = txt.value.trim() || undefined; });
+    row.appendChild(sel); row.appendChild(txt);
+    rows.appendChild(row);
+  });
 }
 
 /* ════════════════════════════════════════════
@@ -432,24 +615,35 @@ async function discoverProxmox() {
   const status = document.getElementById('discover-status');
   const result = document.getElementById('discover-result');
   btn.disabled = true;
-  status.textContent = '⟳ Connecting to Proxmox…';
+  status.textContent = '⧳ Connecting to Proxmox…';
   result.innerHTML = '';
   try {
     const r = await fetch('/api/proxmox-status/?force=1');
     const d = await r.json();
-    if (!d.ok) {
-      status.textContent = '✗ ' + d.error;
-      return;
-    }
+    if (!d.ok) { status.textContent = '✗ ' + d.error; btn.disabled = false; return; }
+    state._discoveredStorages = d.storages;
+    state._discoveredBridges  = d.bridges;
     status.textContent = `✓ ${d.storages.length} storage(s), ${d.bridges.length} network(s)`;
+
+    // Populate default storage dropdown
     populateSelect('wz_storage', d.storages.map(s => ({
       value: s.storage,
       label: s.content ? `${s.storage} (${s.type} · ${s.content} · ${s.available_gb} GB free)` : `${s.storage} (${s.type} · ${s.available_gb} GB free)`,
-    })), state.storage, 'Auto-select storage');
-    populateSelect('wz_bridge',  d.bridges.map(b => ({
+    })), state.storage, '— select or type —');
+    // Populate default bridge dropdown
+    populateSelect('wz_bridge', d.bridges.map(b => ({
       value: b.name,
       label: b.vlan_aware ? `${b.name} [VLAN aware]` : b.name,
-    })), state.bridge, 'Auto-select bridge');
+    })), state.bridge, '— select or type —');
+
+    // Keep text inputs in sync
+    if (state.storage) document.getElementById('wz_storage_text').value = state.storage;
+    if (state.bridge)  document.getElementById('wz_bridge_text').value  = state.bridge;
+
+    // Build per-disk and per-NIC assignment rows
+    buildPerDiskRows(d.storages);
+    buildPerNicRows(d.bridges);
+
     result.innerHTML = renderInventoryTables(d);
   } catch(e) {
     status.textContent = '✗ ' + e.message;
@@ -596,6 +790,39 @@ function rebuildSourcePaths() {
   state.source_paths = Array.from(
     document.querySelectorAll('#vmdk-checklist input[type=checkbox]:checked')
   ).map(cb => cb.value);
+  // Auto-peek if the only checked item is a known archive
+  if (state.source_paths.length === 1) {
+    const p = state.source_paths[0].toLowerCase();
+    if (p.endsWith('.zip') || p.endsWith('.7z') || p.endsWith('.tar.gz') ||
+        p.endsWith('.tar.bz2') || p.endsWith('.tar.xz') || p.endsWith('.tar.zst')) {
+      peekArchive(state.source_paths[0]);
+    }
+  }
+}
+
+async function peekArchive(archivePath) {
+  const status = document.getElementById('scan-status');
+  if (status) status.textContent = '⧳ Peeking inside archive…';
+  try {
+    const r = await fetch('/api/peek-archive/?path=' + encodeURIComponent(archivePath));
+    const d = await r.json();
+    if (!d.ok) { if (status) status.textContent = '⚠ ' + d.error; return; }
+    if (status) status.textContent = `✓ Archive contains ${d.filenames.length} file(s), ${d.vmdks.length} VMDK(s).`;
+    if (d.vmx_specs && Object.keys(d.vmx_specs).length) {
+      applyVmxSpecs(d.vmx_specs);
+    }
+    // Show VMDK names as informational (they'll be inside the archive on extract)
+    if (d.vmdks.length) {
+      const hint = document.getElementById('vmx-hints');
+      if (hint) {
+        const existing = hint.innerHTML;
+        hint.innerHTML = existing + `<div style="margin-top:6px;color:var(--muted);font-size:0.82rem">📦 Archive VMDK(s): ${d.vmdks.map(v => esc(v)).join(', ')}</div>`;
+        hint.style.display = '';
+      }
+    }
+  } catch(e) {
+    if (status) status.textContent = '⚠ Peek failed: ' + e.message;
+  }
 }
 
 /* ════════════════════════════════════════════
@@ -632,22 +859,35 @@ async function browseDir(path) {
     if (!d.ok) { listing.innerHTML = `<div style="padding:12px;color:var(--error)">${esc(d.error)}</div>`; return; }
     document.getElementById('modalPath').value = d.path;
     const parent = d.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
-    let html = '';
+    listing.innerHTML = '';
+
+    function makeDirItem(path, label) {
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.style.cursor = 'pointer';
+      div.innerHTML = label;
+      div.addEventListener('click', () => browseDir(path));
+      listing.appendChild(div);
+    }
+
     if (d.path !== parent) {
-      html += `<div class="file-item" onclick="browseDir(${JSON.stringify(parent)})" style="cursor:pointer"><span>⬆ <em style="color:var(--muted)">..</em></span></div>`;
+      makeDirItem(parent, '<span>⬆ <em style="color:var(--muted)">..</em></span>');
     }
     for (const f of d.folders) {
       const name = f.replace(/.*[\/\\]/, '');
-      html += `<div class="file-item" onclick="browseDir(${JSON.stringify(f)})" style="cursor:pointer"><span>📁 <strong>${esc(name)}</strong></span></div>`;
+      makeDirItem(f, `<span>📁 <strong>${esc(name)}</strong></span>`);
     }
     for (const f of d.files) {
       const isVmdk = f.name.toLowerCase().endsWith('.vmdk');
       const sz = f.size ? ` — ${(f.size/1073741824).toFixed(1)} GB` : '';
       const style = isVmdk ? 'color:#60a5fa;font-weight:600' : 'color:var(--muted)';
-      html += `<div class="file-item" style="cursor:default"><span style="${style}">📄 ${esc(f.name)}${esc(sz)}</span></div>`;
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.style.cursor = 'default';
+      div.innerHTML = `<span style="${style}">📄 ${esc(f.name)}${esc(sz)}</span>`;
+      listing.appendChild(div);
     }
-    if (!d.folders.length && !d.files.length) html = '<p style="padding:12px;color:var(--muted)">Empty directory</p>';
-    listing.innerHTML = html;
+    if (!d.folders.length && !d.files.length) listing.innerHTML = '<p style="padding:12px;color:var(--muted)">Empty directory</p>';
   } catch(e) {
     listing.innerHTML = `<div style="padding:12px;color:var(--error)">Error: ${esc(e.message)}</div>`;
   }
@@ -660,11 +900,16 @@ function submitJob() {
   const errBox = document.getElementById('launch-error');
   errBox.style.display = 'none';
 
+  // Resolve freetext overrides for storage/bridge
+  const storageTxt = (document.getElementById('wz_storage_text')||{}).value;
+  const bridgeTxt  = (document.getElementById('wz_bridge_text')||{}).value;
+  if (storageTxt && storageTxt.trim()) state.storage = storageTxt.trim();
+  if (bridgeTxt  && bridgeTxt.trim())  state.bridge  = bridgeTxt.trim();
+
   // Final validation
-  if (!state.name.trim())  { errBox.innerHTML = '<div class="message error">Job name is missing.</div>';    errBox.style.display='block'; return; }
+  if (!state.name.trim()) { errBox.innerHTML = '<div class="message error">Job name is missing.</div>'; errBox.style.display='block'; return; }
   if (state.mode === 'local') {
-    if (!state.manifest_path) { errBox.innerHTML = '<div class="message error">Manifest path is missing.</div>'; errBox.style.display='block'; return; }
-    if (!state.source_paths.length) { errBox.innerHTML = '<div class="message error">No VMDK files selected.</div>'; errBox.style.display='block'; return; }
+    if (!state.source_paths.length) { errBox.innerHTML = '<div class="message error">No VMDK or archive files selected.</div>'; errBox.style.display='block'; return; }
   }
 
   const form = document.getElementById('launchForm');
@@ -679,6 +924,10 @@ function submitJob() {
   document.getElementById('f_disk_format').value = state.disk_format || '';
   document.getElementById('f_dry_run').value  = state.dry_run ? 'on' : '';
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
+  document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
+  document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
+  document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';
+  document.getElementById('f_vmware_host_id').value   = state.vmware_host_id  || '';
 
   // Remove previously injected source_paths inputs
   form.querySelectorAll('input[name=source_paths]').forEach(el => el.remove());

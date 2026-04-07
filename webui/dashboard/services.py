@@ -98,9 +98,47 @@ def file_choice_items(files: Iterable[Path]) -> list[tuple[str, str]]:
     return [(str(path), path.name) for path in files]
 
 
-def execute_job(job: MigrationJob) -> MigrationJob:
+def _engine_from_job(job: MigrationJob) -> MigrationEngine:
+    """Build a MigrationEngine from a registered host pair when available,
+    falling back to the config-file path when not."""
+    if job.proxmox_host_id:
+        from .models import ProxmoxHost, VMwareHost
+        from vmware_to_proxmox.config import AppConfig, ProxmoxConfig, VmwareConfig, MigrationConfig
+        pve = job.proxmox_host
+        vmw = job.vmware_host
+
+        proxmox_cfg = ProxmoxConfig(
+            node=pve.node,
+            default_storage=pve.default_storage,
+            default_bridge=pve.default_bridge,
+            ssh_enabled=pve.ssh_enabled,
+            ssh_host=pve.ssh_host or pve.api_host,
+            ssh_port=pve.ssh_port,
+            ssh_username=pve.ssh_username,
+            ssh_password=pve.ssh_password,
+            ssh_private_key=pve.ssh_private_key,
+            api_host=pve.api_host,
+            api_user=pve.api_user,
+            api_token_name=pve.api_token_name,
+            api_token_value=pve.api_token_value,
+            api_verify_ssl=pve.api_verify_ssl,
+        )
+        vmware_cfg = VmwareConfig(
+            host=vmw.host if vmw else "",
+            username=vmw.username if vmw else "",
+            password=vmw.password if vmw else "",
+            port=vmw.port if vmw else 443,
+            allow_insecure_ssl=vmw.allow_insecure_ssl if vmw else True,
+        )
+        config = AppConfig(proxmox=proxmox_cfg, vmware=vmware_cfg, migration=MigrationConfig())
+        return MigrationEngine(config, logger=logging.getLogger("webui.migration"))
+
     config_path = resolve_config_profile_path(job.config_profile)
-    engine = MigrationEngine(AppConfig.load(config_path), logger=logging.getLogger("webui.migration"))
+    return MigrationEngine(AppConfig.load(config_path), logger=logging.getLogger("webui.migration"))
+
+
+def execute_job(job: MigrationJob) -> MigrationJob:
+    engine = _engine_from_job(job)
     vm_name = job.vm_name.strip()
     storage = job.storage or None
     bridge = job.bridge or None
