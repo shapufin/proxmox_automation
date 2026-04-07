@@ -1,65 +1,28 @@
-services:
-  migrate:
-    build:
-      context: .
-    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py migrate --noinput"
-    environment:
-      DJANGO_DEBUG: "0"
-      DJANGO_ALLOWED_HOSTS: "*"
-      DJANGO_SECRET_KEY: "change-me"
-      VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
-      VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
-      VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
-    volumes:
-      - ./config.yaml:/config/config.yaml:ro
-      - ./configs:/app/configs
-      - ./data:/app/data
-      - ./staging:/data/staging
-      # Optional: bind-mount host storage so the LXC can see VMDK files directly.
-      # On the Proxmox host run: mkdir -p /mnt/vmware_staging
-      # Then uncomment the line below (adjust left side to your actual host path):
-      # - /var/lib/vz/dump:/mnt/vmware_staging:ro
+x-common: &common
+  build:
+    context: .
+  environment:
+    DJANGO_DEBUG: "0"
+    DJANGO_ALLOWED_HOSTS: "*"
+    DJANGO_SECRET_KEY: "change-me"
+    VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
+    VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
+    VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
+  volumes:
+    - ./config.yaml:/config/config.yaml:ro
+    - ./configs:/app/configs
+    - ./data:/app/data
+    - ./staging:/data/staging
+    # Uncomment to expose Proxmox host storage to the container:
+    # - /var/lib/vz/dump:/mnt/vmware_staging:ro
 
+services:
   web:
-    build:
-      context: .
-    command: sh -c "mkdir -p /app/configs /app/data /data/staging && gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2"
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    environment:
-      DJANGO_DEBUG: "0"
-      DJANGO_ALLOWED_HOSTS: "*"
-      DJANGO_SECRET_KEY: "change-me"
-      VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
-      VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
-      VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
-    volumes:
-      - ./config.yaml:/config/config.yaml:ro
-      - ./configs:/app/configs
-      - ./data:/app/data
-      - ./staging:/data/staging
-      # - /var/lib/vz/dump:/mnt/vmware_staging:ro
+    <<: *common
+    command: gunicorn webui.wsgi:application --bind 0.0.0.0:8000 --workers 2
     ports:
       - "8000:8000"
 
   worker:
-    build:
-      context: .
-    command: sh -c "mkdir -p /app/configs /app/data /data/staging && python manage.py worker"
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    environment:
-      DJANGO_DEBUG: "0"
-      DJANGO_ALLOWED_HOSTS: "*"
-      DJANGO_SECRET_KEY: "change-me"
-      VMWARE_TO_PROXMOX_CONFIG: /config/config.yaml
-      VMWARE_TO_PROXMOX_CONFIG_DIR: /app/configs
-      VMWARE_TO_PROXMOX_STAGE_ROOT: /data/staging
-    volumes:
-      - ./config.yaml:/config/config.yaml:ro
-      - ./configs:/app/configs
-      - ./data:/app/data
-      - ./staging:/data/staging
-      # - /var/lib/vz/dump:/mnt/vmware_staging:ro
+    <<: *common
+    command: python manage.py worker

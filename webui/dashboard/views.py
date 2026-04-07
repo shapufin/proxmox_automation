@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 from django.contrib import messages
+from django.core.cache import cache as _django_cache
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -27,8 +27,8 @@ from .services import (
     save_config_profile,
 )
 
-_PROXMOX_STATUS_CACHE: dict[str, object] = {}
 _PROXMOX_STATUS_TTL = 30  # seconds
+_PROXMOX_STATUS_CACHE_KEY = "proxmox_status_v1"
 
 
 def _empty_inventory() -> dict[str, list[object]]:
@@ -250,13 +250,15 @@ def job_detail(request: HttpRequest, job_id: int) -> HttpResponse:
 
 
 def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:
-    job = get_object_or_404(MigrationJob, pk=job_id)
-    if job.status != JobStatus.PENDING:
-        messages.info(request, "This job is not pending.")
-        return redirect("dashboard:job_detail", job_id=job.id)
-    job.status = JobStatus.RUNNING
-    job.started_at = timezone.now()
-    job.save(update_fields=["status", "started_at", "updated_at"])
+    from django.db import transaction
+    with transaction.atomic():
+        job = get_object_or_404(MigrationJob.objects.select_for_update(), pk=job_id)
+        if job.status != JobStatus.PENDING:
+            messages.info(request, "This job is not pending.")
+            return redirect("dashboard:job_detail", job_id=job.id)
+        job.status = JobStatus.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=["status", "started_at", "updated_at"])
     try:
         execute_job(job)
         messages.success(request, f"Job {job.id} completed.")
@@ -274,10 +276,10 @@ def proxmox_status(request: HttpRequest) -> JsonResponse:
     """Live Proxmox connectivity check — returns storages, bridges, and any error.
     Pass ?force=1 to bypass the 30-second cache and force a fresh connection."""
     force = request.GET.get("force", "") in {"1", "true"}
-    now = time.monotonic()
-    cached = _PROXMOX_STATUS_CACHE
-    if not force and cached.get("ok") and (now - float(cached.get("ts", 0))) < _PROXMOX_STATUS_TTL:
-        return JsonResponse({k: v for k, v in cached.items() if k != "ts"})
+    if not force:
+        cached = _django_cache.get(_PROXMOX_STATUS_CACHE_KEY)
+        if cached:
+            return JsonResponse(cached)
     try:
         engine = get_engine()
         if force:
@@ -306,12 +308,10 @@ def proxmox_status(request: HttpRequest) -> JsonResponse:
                 for b in bridges
             ],
         }
-        _PROXMOX_STATUS_CACHE.clear()
-        _PROXMOX_STATUS_CACHE.update(payload)
-        _PROXMOX_STATUS_CACHE["ts"] = now
+        _django_cache.set(_PROXMOX_STATUS_CACHE_KEY, payload, timeout=_PROXMOX_STATUS_TTL)
         return JsonResponse(payload)
     except Exception as exc:  # noqa: BLE001
-        _PROXMOX_STATUS_CACHE.clear()
+        _django_cache.delete(_PROXMOX_STATUS_CACHE_KEY)
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)
 
 

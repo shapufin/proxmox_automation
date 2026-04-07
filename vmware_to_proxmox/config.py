@@ -12,7 +12,10 @@ from .models import DiskFormat, FirmwareMode
 def _coerce_int(value: Any, default: int) -> int:
     if value in (None, ""):
         return default
-    return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:

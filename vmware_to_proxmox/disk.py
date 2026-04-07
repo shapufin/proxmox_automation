@@ -103,8 +103,9 @@ _ARCHIVE_SUFFIXES: dict[str, str] = {
     ".zip":  "zip",
     ".7z":   "7z",
     ".tar":  "tar",
-    ".gz":   "tar.gz",   # will be re-checked below for .tar.gz
-    ".tgz":  "tar.gz",
+    ".tgz":  "tar.gz",   # .tgz is always tar+gzip
+    # .gz alone is NOT included — a bare .gz is not necessarily a tarball;
+    # .tar.gz is already matched by the multi-suffix check in detect_archive_type.
     ".bz2":  "tar.bz2",
     ".xz":   "tar.xz",
     ".zst":  "tar.zst",

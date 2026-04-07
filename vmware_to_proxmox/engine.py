@@ -310,7 +310,7 @@ class MigrationEngine:
         vm = self._vm_from_manifest(manifest_path, vmx_specs=vmx_specs, fallback_name=vm_name)
         if vm_name and vm.name != vm_name:
             vm.name = vm_name
-        warnings = self.vmware.validate_supported(vm) if vm.is_linux else []
+        warnings = self.vmware.validate_supported(vm)
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)

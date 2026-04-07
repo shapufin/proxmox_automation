@@ -345,9 +345,17 @@ class ProxmoxClient:
             disk_format.value,
         ])
         output = (proc.stdout or "") + (proc.stderr or "")
+        # Try the English success message first (any capitalisation)
         for line in output.splitlines()[::-1]:
-            if "Successfully imported disk as" in line:
+            lower = line.lower()
+            if "successfully imported disk as" in lower or "imported disk as" in lower:
                 return line.split("as", 1)[1].strip().strip("'\"")
+        # Fallback: grep for a volume-id pattern like "local-lvm:vm-100-disk-0"
+        import re as _re
+        for line in output.splitlines()[::-1]:
+            m = _re.search(r"(\S+:\S+-\d+-disk-\d+)", line)
+            if m:
+                return m.group(1)
         raise ProxmoxClientError(f"Could not determine imported volume from output:\n{output}")
 
     def attach_disk(self, vmid: int, volume_id: str, slot: str = "scsi0", cache: str = "writeback") -> None:
@@ -537,7 +545,12 @@ class ProxmoxClient:
 
         Uses 'rm -rf' — call only on temp directories created by extract_archive.
         """
-        if not remote_dir or remote_dir in {"/", "/var", "/etc", "/home", "/root"}:
-            raise ProxmoxClientError(f"Refusing to delete dangerous path: {remote_dir!r}")
+        _SAFE_PREFIXES = ("/tmp/", "/var/tmp/", "/mnt/", "/data/", "/root/tmp/")
+        norm = remote_dir.rstrip("/")
+        if not norm or not any(norm.startswith(p.rstrip("/")) for p in _SAFE_PREFIXES):
+            raise ProxmoxClientError(
+                f"Refusing to delete '{remote_dir}': path must be inside "
+                f"a safe temp directory ({', '.join(_SAFE_PREFIXES)})"
+            )
         log.info("Removing host temp directory %s", remote_dir)
         self._run(["rm", "-rf", remote_dir])

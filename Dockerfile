@@ -19,14 +19,15 @@ COPY templates /app/templates
 COPY static /app/static
 COPY manage.py /app/manage.py
 COPY config.example.yaml /app/config.example.yaml
+COPY entrypoint.sh /app/entrypoint.sh
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir .
-
-RUN mkdir -p /app/data /app/staticfiles \
-    && python manage.py collectstatic --noinput
+    && pip install --no-cache-dir . \
+    && chmod +x /app/entrypoint.sh \
+    && mkdir -p /app/data /app/staticfiles
 
 EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["gunicorn", "webui.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]
