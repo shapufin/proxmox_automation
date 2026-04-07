@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import subprocess
 import shutil
@@ -10,6 +11,8 @@ from typing import Any, Optional
 import paramiko
 
 from .models import DiskFormat, ProxmoxBridgeSpec, ProxmoxStorageSpec
+
+log = logging.getLogger(__name__)
 
 
 class ProxmoxClientError(RuntimeError):
@@ -26,6 +29,11 @@ class ProxmoxClient:
         ssh_username: str = "root",
         ssh_private_key: str = "",
         ssh_password: str = "",
+        api_host: str = "",
+        api_user: str = "root@pam",
+        api_token_name: str = "",
+        api_token_value: str = "",
+        api_verify_ssl: bool = False,
     ) -> None:
         self.node = node
         self.ssh_enabled = ssh_enabled
@@ -34,6 +42,43 @@ class ProxmoxClient:
         self.ssh_username = ssh_username
         self.ssh_private_key = ssh_private_key
         self.ssh_password = ssh_password
+        self.api_host = api_host
+        self.api_user = api_user
+        self.api_token_name = api_token_name
+        self.api_token_value = api_token_value
+        self.api_verify_ssl = api_verify_ssl
+        self._proxmox_api: Any = None
+
+    def _api_client(self) -> Any:
+        """Return a proxmoxer ProxmoxAPI instance, or None if credentials are not configured."""
+        if self._proxmox_api is not None:
+            return self._proxmox_api
+        host = self.api_host or self.ssh_host or self.node
+        if not host:
+            return None
+        try:
+            from proxmoxer import ProxmoxAPI  # type: ignore[import-untyped]
+            if self.api_token_name and self.api_token_value:
+                self._proxmox_api = ProxmoxAPI(
+                    host,
+                    user=self.api_user,
+                    token_name=self.api_token_name,
+                    token_value=self.api_token_value,
+                    verify_ssl=self.api_verify_ssl,
+                )
+            elif self.ssh_password:
+                self._proxmox_api = ProxmoxAPI(
+                    host,
+                    user=self.api_user,
+                    password=self.ssh_password,
+                    verify_ssl=self.api_verify_ssl,
+                )
+            else:
+                return None
+            return self._proxmox_api
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not build Proxmox API client: %s", exc)
+            return None
 
     def _run(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         if self.ssh_enabled:
@@ -74,16 +119,35 @@ class ProxmoxClient:
             client.close()
 
     def ensure_prerequisites(self) -> None:
+        """When SSH is enabled the binaries live on the remote host, not locally.
+        When the API client is available we skip CLI checks for read-only operations.
+        Only check locally if both SSH and API are absent."""
+        if self.ssh_enabled:
+            return
+        if self._api_client() is not None:
+            return
         required = ["qm", "pvesh", "pvesm", "qemu-img"]
         missing = [cmd for cmd in required if shutil.which(cmd) is None]
         if missing:
-            if self.ssh_enabled and "qemu-img" not in missing:
-                return
-            raise ProxmoxClientError(f"Missing required Proxmox host commands: {', '.join(missing)}")
+            raise ProxmoxClientError(
+                f"Missing required Proxmox host commands: {', '.join(missing)}. "
+                "Set proxmox.ssh_enabled=true and proxmox.ssh_host in config.yaml, "
+                "or configure proxmox.api_host + api_token_name + api_token_value."
+            )
 
     def list_storages(self) -> list[ProxmoxStorageSpec]:
+        api = self._api_client()
+        if api is not None:
+            try:
+                data = api.nodes(self.node).storage.get()
+                return self._parse_storages(data)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("API storage query failed, falling back to SSH CLI: %s", exc)
         proc = self._run(["pvesm", "status", "--output-format", "json"])
-        data = json.loads(proc.stdout or "[]")
+        return self._parse_storages(json.loads(proc.stdout or "[]"))
+
+    @staticmethod
+    def _parse_storages(data: list[dict[str, Any]]) -> list[ProxmoxStorageSpec]:
         storages: list[ProxmoxStorageSpec] = []
         for row in data:
             storages.append(
@@ -101,8 +165,18 @@ class ProxmoxClient:
         return storages
 
     def list_bridges(self) -> list[ProxmoxBridgeSpec]:
+        api = self._api_client()
+        if api is not None:
+            try:
+                data = api.nodes(self.node).network.get()
+                return self._parse_bridges(data)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("API network query failed, falling back to SSH CLI: %s", exc)
         proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
-        data = json.loads(proc.stdout or "[]")
+        return self._parse_bridges(json.loads(proc.stdout or "[]"))
+
+    @staticmethod
+    def _parse_bridges(data: list[dict[str, Any]]) -> list[ProxmoxBridgeSpec]:
         bridges: list[ProxmoxBridgeSpec] = []
         for row in data:
             if row.get("type") != "bridge":
@@ -119,6 +193,12 @@ class ProxmoxClient:
         return bridges
 
     def next_vmid(self) -> int:
+        api = self._api_client()
+        if api is not None:
+            try:
+                return int(api.cluster.nextid.get())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("API nextid query failed, falling back to SSH CLI: %s", exc)
         proc = self._run(["pvesh", "get", "/cluster/nextid", "--output-format", "text"])
         return int((proc.stdout or "").strip())
 

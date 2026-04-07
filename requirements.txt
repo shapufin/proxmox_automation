@@ -5,3 +5,5 @@ gunicorn==22.0.0
 whitenoise==6.7.0
 paramiko==3.5.0
 pyvmomi==8.0.3.0.1
+proxmoxer==2.0.1
+requests==2.32.3

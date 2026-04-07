@@ -55,6 +55,8 @@ class ProxmoxConfig:
     api_user: str = "root@pam"
     api_token_name: str = ""
     api_token_value: str = ""
+    api_host: str = ""
+    api_verify_ssl: bool = False
     ssh_enabled: bool = False
     ssh_host: str = ""
     ssh_port: int = 22
@@ -133,6 +135,8 @@ class AppConfig:
                 api_user=str(proxmox.get("api_user", "root@pam")),
                 api_token_name=str(proxmox.get("api_token_name", "")),
                 api_token_value=str(proxmox.get("api_token_value", "")),
+                api_host=str(proxmox.get("api_host", "")),
+                api_verify_ssl=_coerce_bool(proxmox.get("api_verify_ssl", False), False),
                 ssh_enabled=_coerce_bool(proxmox.get("ssh_enabled", False), False),
                 ssh_host=str(proxmox.get("ssh_host", "")),
                 ssh_port=_coerce_int(proxmox.get("ssh_port", 22), 22),

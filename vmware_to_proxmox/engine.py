@@ -58,6 +58,11 @@ class MigrationEngine:
             ssh_username=config.proxmox.ssh_username,
             ssh_private_key=config.proxmox.ssh_private_key,
             ssh_password=config.proxmox.ssh_password,
+            api_host=config.proxmox.api_host,
+            api_user=config.proxmox.api_user,
+            api_token_name=config.proxmox.api_token_name,
+            api_token_value=config.proxmox.api_token_value,
+            api_verify_ssl=config.proxmox.api_verify_ssl,
         )
         self.remediator = GuestRemediator()
 
