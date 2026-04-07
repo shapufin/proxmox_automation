@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import ssl
 from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Optional
 
 import paramiko
-from pyVim.connect import Disconnect, SmartConnect, SmartConnectNoSSL
+from pyVim.connect import Disconnect, SmartConnect
 from pyVmomi import vim
 
 from .models import VmwareDiskSpec, VmwareNicSpec, VmwareVmSpec
@@ -36,12 +37,13 @@ class VmwareClient:
         return self._content
 
     def connect(self) -> None:
-        connector = SmartConnectNoSSL if self.allow_insecure_ssl else SmartConnect
-        self._service_instance = connector(
+        ssl_context = ssl._create_unverified_context() if self.allow_insecure_ssl else ssl.create_default_context()
+        self._service_instance = SmartConnect(
             host=self.host,
             user=self.username,
             pwd=self.password,
             port=self.port,
+            sslContext=ssl_context,
         )
         self._content = self._service_instance.RetrieveContent()
 
