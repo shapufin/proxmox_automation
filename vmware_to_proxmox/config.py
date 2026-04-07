@@ -50,6 +50,7 @@ class ProxmoxConfig:
     default_storage: str
     default_bridge: str
     bridge_map: dict[str, str] = field(default_factory=dict)
+    datastore_map: dict[str, str] = field(default_factory=dict)
     format: DiskFormat = DiskFormat.QCOW2
     boot_firmware: FirmwareMode = FirmwareMode.AUTO
     scsi_controller: str = "virtio-scsi-single"
@@ -130,6 +131,7 @@ class AppConfig:
                 default_storage=str(proxmox.get("default_storage", "")),
                 default_bridge=str(proxmox.get("default_bridge", "")),
                 bridge_map=dict(proxmox.get("bridge_map", {})),
+                datastore_map=dict(proxmox.get("datastore_map", {})),
                 format=DiskFormat(format_value),
                 boot_firmware=FirmwareMode(boot_value),
                 scsi_controller=str(proxmox.get("scsi_controller", "virtio-scsi-single")),
@@ -174,5 +176,21 @@ class AppConfig:
     def target_format(self, override: Optional[DiskFormat] = None) -> DiskFormat:
         return override or self.migration.target_format_override or self.proxmox.format
 
-    def bridge_for_network(self, network_name: str) -> str:
-        return self.proxmox.bridge_map.get(network_name, self.proxmox.default_bridge)
+    def bridge_for_network(self, vmware_network_name: str) -> str:
+        """Return the Proxmox bridge for a VMware network name.
+
+        Lookup order:
+        1. Exact match in proxmox.bridge_map
+        2. proxmox.default_bridge
+        """
+        return self.proxmox.bridge_map.get(vmware_network_name, self.proxmox.default_bridge)
+
+    def storage_for_datastore(self, vmware_datastore_name: str) -> str:
+        """Return the Proxmox storage for a VMware datastore name.
+
+        Lookup order:
+        1. Exact match in proxmox.datastore_map
+        2. proxmox.default_storage
+        """
+        return self.proxmox.datastore_map.get(vmware_datastore_name, self.proxmox.default_storage)
+

@@ -87,13 +87,21 @@ Then open:
 http://localhost:8000
 ```
 
+The stack runs three services from the same image:
+
+- **migrate** — runs `manage.py migrate` and `collectstatic` once then exits. `web` and `worker` wait for it to complete successfully before starting.
+- **web** — Gunicorn serving the Django UI on port 8000.
+- **worker** — polls the DB for pending `MigrationJob` records and executes them.
+
+All three services share a single SQLite database at `/app/data/db.sqlite3` via the `./data` volume mount. The `DJANGO_DB_PATH` env var pins the path so every container uses the same file.
+
 The GUI lets you:
 
-- Browse the staged local disks
-- Select one or more disks for a migration job
-- Load the manifest for the VM
-- Launch the migration in the worker container
-- Review job status and migration output
+- Register Proxmox and VMware hosts (no config file needed)
+- Browse the staged local disks on the Proxmox host via SSH/SFTP
+- Select one or more disks or archives for a migration job
+- Set per-disk storage and per-NIC bridge overrides
+- Launch and monitor migration jobs
 
 ## Usage
 
@@ -183,18 +191,27 @@ mkdir -p configs data staging
 docker compose up --build
 ```
 
+The `migrate` service runs database migrations automatically before `web` and `worker` start. No manual `manage.py migrate` step is needed.
+
 ### 5. Open the GUI
 
 ```text
 http://localhost:8000
 ```
 
-### 6. Run a safe first test
+### 6. Register hosts
+
+- Go to **Hosts** in the sidebar.
+- Add a Proxmox host (API token + SSH credentials).
+- Optionally add a VMware host for direct VM migration.
+- Use **Test Connection** to verify credentials before launching a job.
+
+### 7. Run a safe first test
 
 - Leave **Dry run** enabled.
-- Refresh inventory.
+- In the wizard, select a registered Proxmox host.
 - Select a VMware VM or a staged local-disk folder.
-- Confirm the generated job details.
+- Review storage, bridge, and disk format.
 - Run the job only when the plan looks correct.
 
 ## Production checklist
@@ -217,9 +234,11 @@ http://localhost:8000
   - Validate the plan before disabling dry-run.
 
 - **Container runtime**
-  - Confirm `docker compose up --build` starts both services cleanly.
+  - Confirm `docker compose up --build` starts all three services cleanly.
+  - Confirm the `migrate` service exits 0 before `web` and `worker` start.
   - Confirm the web UI loads at port `8000`.
   - Confirm the `configs/`, `data/`, and `staging/` volumes persist.
+  - Confirm `DJANGO_SECRET_KEY` is set to a random value (not `change-me`).
 
 ## Live validation procedure
 

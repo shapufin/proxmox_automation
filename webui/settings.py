@@ -52,10 +52,14 @@ ROOT_URLCONF = "webui.urls"
 WSGI_APPLICATION = "webui.wsgi.application"
 ASGI_APPLICATION = "webui.asgi.application"
 
+_DB_PATH = os.environ.get("DJANGO_DB_PATH", str(BASE_DIR / "data" / "db.sqlite3"))
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "data" / "db.sqlite3",
+        "NAME": Path(_DB_PATH),
+        "OPTIONS": {
+            "timeout": 20,
+        },
     }
 }
 

@@ -13,7 +13,7 @@ It has two migration modes:
 | Mode | How it works |
 |---|---|
 | **VMware Direct** | Connects to ESXi/vCenter via pyvmomi, reads VM specs + exports disks |
-| **Local Disk** | You pre-copy VMDK files to a staging directory on the Proxmox host; the app imports them via `qm importdisk` over SSH |
+| **Local Disk** | Pre-copy VMDK files to a staging directory on the Proxmox host; the app imports them via `qm importdisk` over SSH |
 
 ---
 
@@ -22,38 +22,40 @@ It has two migration modes:
 ```
 vmware_to_proxmox/           ← Python library (core logic)
 │   config.py                  AppConfig dataclass loader (YAML → Python)
-│   models.py                  Shared dataclasses: DiskFormat, ProxmoxStorageSpec, ProxmoxBridgeSpec, etc.
+│   models.py                  Shared dataclasses: DiskFormat, VmwareVmSpec, MigrationResult, etc.
 │   engine.py                  MigrationEngine — orchestrates the full migration workflow
-│   proxmox.py                 ProxmoxClient — all Proxmox interaction (SSH CLI + REST API + SFTP)
+│   proxmox.py                 ProxmoxClient — SSH CLI + REST API + SFTP to Proxmox host
 │   vmware.py                  VMwareClient — pyvmomi connection, VM listing, disk export
-│   disk.py                    Disk format helpers (qcow2, raw, vmdk detection)
+│   disk.py                    Disk format helpers (qcow2, raw, vmdk detection, archive detection)
 │   guest.py                   Guest remediation (fstab rewrite, qemu-agent install)
 │   cli.py                     Click CLI entrypoint (non-web usage)
 │   logger.py                  Logging setup
 
 webui/                       ← Django project
-│   settings.py                Django settings (SQLite, static files, env vars)
+│   settings.py                Django settings (SQLite path via DJANGO_DB_PATH, env vars)
 │   urls.py                    Root URL router (includes dashboard app)
 │   dashboard/
-│       models.py              MigrationJob Django model
+│       models.py              MigrationJob, ProxmoxHost, VMwareHost Django models
 │       views.py               All HTTP views + JSON API endpoints
-│       forms.py               MigrationJobForm, ConfigProfileForm, DiskBrowseForm
-│       services.py            Business logic between views and engine
+│       forms.py               MigrationJobForm, ProxmoxHostForm, VMwareHostForm, etc.
+│       services.py            Business logic: execute_job, _engine_from_job, config profiles
 │       urls.py                URL patterns for the dashboard app
-│       migrations/            Django DB migrations
+│       migrations/            Django DB migrations (0001–0006)
 
-templates/dashboard/         ← Jinja2/Django HTML templates
-│   base.html                  Nav bar, CSS includes
-│   index.html                 Main dashboard (wizard form, job table, JS state machine)
+templates/dashboard/         ← Django HTML templates
+│   base.html                  Nav bar, sidebar (Dashboard / Hosts / Configs / Browse)
+│   wizard.html                Multi-step migration wizard (JS state machine)
+│   hosts.html                 Host registration management page
 │   job_detail.html            Single job log view
 │   config_editor.html         YAML config profile editor
-│   browse.html                Legacy disk browser (mostly replaced by modal)
+│   browse.html                Disk browser
 
 static/
 │   dashboard.css              All CSS (dark theme, wizard steps, cards, badges)
 
+entrypoint.sh                ← Container entrypoint: mkdir dirs, exec CMD
 config.example.yaml          ← Copy to config.yaml and fill in credentials
-docker-compose.yml           ← Defines migrate / web / worker services
+docker-compose.yml           ← migrate / web / worker services
 Dockerfile                   ← Single image used by all three services
 requirements.txt             ← Python dependencies
 pyproject.toml               ← Build config (setuptools package discovery)
@@ -66,105 +68,125 @@ pyproject.toml               ← Build config (setuptools package discovery)
 ### `vmware_to_proxmox/config.py`
 - Defines `AppConfig`, `VmwareConfig`, `ProxmoxConfig`, `MigrationConfig`, `SshConfig` dataclasses.
 - `AppConfig.load(path)` reads `config.yaml` (YAML → dataclasses).
-- Has `_coerce_int` / `_coerce_bool` helpers so blank YAML fields don't crash.
-- **Important fields in `ProxmoxConfig`:**
-  - `ssh_enabled`, `ssh_host`, `ssh_port`, `ssh_username`, `ssh_password`, `ssh_private_key` — SSH to Proxmox host
-  - `api_host`, `api_user`, `api_token_name`, `api_token_value`, `api_verify_ssl` — Proxmox REST API (port 8006)
+- `_coerce_int` / `_coerce_bool` helpers absorb invalid YAML values with safe defaults.
+- **`AppConfig` methods:**
+  - `bridge_for_network(name)` — looks up `proxmox.bridge_map`, falls back to `default_bridge`
+  - `storage_for_datastore(name)` — looks up `proxmox.datastore_map`, falls back to `default_storage`
+  - `target_format()` — resolves disk format from config override or global default
+- **Important `ProxmoxConfig` fields:**
+  - `bridge_map` — `{"VM Network": "vmbr0", "DMZ": "vmbr1"}` VMware → Proxmox bridge
+  - `datastore_map` — `{"datastore1": "local-lvm"}` VMware datastore → Proxmox storage
+  - `ssh_*` — SSH credentials to Proxmox host
+  - `api_*` — REST API credentials (port 8006)
 
 ### `vmware_to_proxmox/proxmox.py`
-The most important file. `ProxmoxClient` handles:
+`ProxmoxClient` — the most critical file. All Proxmox interaction:
 
 | Method | What it does |
 |---|---|
-| `_api_client()` | Builds a `proxmoxer.ProxmoxAPI` instance; tests with `api.version.get()`; on DNS/connection failure sets a sentinel and never retries |
-| `_run(args)` | Runs a CLI command locally OR via SSH depending on `ssh_enabled` |
-| `_run_remote(args)` | SSH command execution via paramiko |
-| `list_storages()` | Uses REST API first, falls back to `pvesm status` via SSH |
-| `list_bridges()` | Uses REST API first, falls back to `pvesh get /nodes/{node}/network` via SSH |
-| `list_remote_dir(path)` | **SFTP** directory listing on the Proxmox HOST (not the LXC). Used by the file browser. |
-| `read_remote_file(path)` | Reads a file from the Proxmox HOST via SFTP (used to read manifest.json) |
+| `_run(args)` | CLI command locally OR via SSH (paramiko) |
+| `list_storages()` | REST API first, falls back to `pvesm status` via SSH |
+| `list_bridges()` | REST API first, falls back to `pvesh get /nodes/{node}/network` |
+| `list_remote_dir(path)` | SFTP directory listing on the Proxmox HOST |
 | `create_vm()` | `qm create` via SSH |
-| `import_disk()` | `qm importdisk` via SSH — **path must be a host-absolute path** |
-| `ensure_prerequisites()` | Skips local binary check when SSH or API is configured |
+| `import_disk()` | `qm importdisk` via SSH — path must be HOST-absolute. Parses volume ID from output; regex fallback if English string changes |
+| `extract_archive()` | Extracts .zip/.7z/.tar.gz on the HOST via SSH (avoids pulling GBs into LXC) |
+| `peek_archive()` | Lists archive contents without extraction (`unzip -l`, `7z l`, `tar -tf`) |
+| `remove_remote_dir()` | `rm -rf` guarded to safe prefixes only (`/tmp/`, `/var/tmp/`, `/mnt/`, `/data/`) |
 
-**Critical architecture note:** The app runs inside an LXC. `qm`, `pvesh`, `pvesm` do **not** exist inside the LXC. All CLI calls go over SSH to the host. The host-side absolute path (e.g. `/var/lib/vz/dump/myvm/disk.vmdk`) must be used in `qm importdisk`, not the LXC-local path.
+**Critical:** App runs inside LXC. `qm`, `pvesh`, `pvesm` are **not** in the LXC. All mutating CLI calls go over SSH to the host.
 
 ### `vmware_to_proxmox/engine.py`
-`MigrationEngine` — the main workflow class:
-- `inventory()` → returns `{vmware_vms, proxmox_storages, proxmox_bridges}` for the GUI
-- `run_job(job)` → full migration: plan → create VM on Proxmox → import disks → attach network → remediate guest
-- Instantiates both `VMwareClient` and `ProxmoxClient` from config
+`MigrationEngine` — orchestrates the full workflow:
+- `inventory()` → `{vmware_vms, proxmox_storages, proxmox_bridges}` for the GUI
+- `build_plan()` → fetches VM from VMware, delegates to `_plan_from_vm()` (no duplication)
+- `_plan_from_vm()` → resolves per-disk storage via `storage_for_datastore`, per-NIC bridge via `bridge_for_network`
+- `migrate_local_disks()` → local VMDK import pipeline
+- `migrate_local_disks_or_archive()` → archive-aware entry point (extracts on host, then calls above)
+- `migrate_vm()` / `_migrate_vmware()` → VMware direct pipeline
+
+### `webui/dashboard/models.py`
+Django models:
+- `ProxmoxHost` — registered Proxmox connection profiles (API + SSH credentials, default storage/bridge)
+- `VMwareHost` — registered VMware connection profiles
+- `MigrationJob` — job record with FKs to `ProxmoxHost` / `VMwareHost`; `disk_storage_map` and `nic_bridge_map` JSONFields for per-disk/per-NIC overrides
 
 ### `webui/dashboard/services.py`
-Bridge between views and engine:
-- `get_engine()` → loads config and returns a `MigrationEngine` instance
-- `resolve_stage_path(path)` → accepts **any absolute path** (not locked to `MIGRATION_STAGE_ROOT`)
-- `list_stage_entries(path)` → returns `{directory, folders, files}` for a given path
+- `_engine_from_job(job)` — builds `MigrationEngine` from registered `ProxmoxHost`/`VMwareHost` when set, otherwise falls back to config file
+- `execute_job(job)` → calls `_engine_from_job`, dispatches to `migrate_local_disks_or_archive` or `migrate_vm`
+- Config profile helpers: `list_config_profiles`, `load_config_profile`, `save_config_profile`
 
 ### `webui/dashboard/views.py`
 All HTTP handlers:
 
 | View | URL | Purpose |
 |---|---|---|
-| `dashboard` | `GET /` | Main page — loads inventory, renders wizard form |
-| `launch_job` | `POST /launch/` | Creates a `MigrationJob` DB record |
-| `run_pending_job` | `POST /jobs/<id>/run/` | Executes a pending job synchronously |
+| `wizard` | `GET /` | Migration wizard — passes registered hosts + config profiles |
+| `launch_job` | `POST /launch/` | Creates `MigrationJob` with host FKs |
+| `run_pending_job` | `POST /jobs/<id>/run/` | Atomic `select_for_update` claim → `execute_job` |
 | `job_detail` | `GET /jobs/<id>/` | Job log page |
-| `config_profile_editor` | `GET /configs/` | YAML config editor |
-| `save_profile` | `POST /configs/save/` | Saves a named config profile |
-| `proxmox_status` | `GET /api/proxmox-status/` | **JSON** — live storages + bridges from Proxmox host |
-| `browse_directory` | `GET /api/browse-directory/?path=` | **JSON** — HOST filesystem listing via SFTP |
-| `vmdk_scan` | `GET /api/vmdk-scan/?path=` | **JSON** — VMDKs in a host dir + auto-detect manifest.json |
+| `hosts` | `GET /hosts/` | Host registration management |
+| `proxmox_status` | `GET /api/proxmox-status/` | Live storages + bridges; 30 s Django cache |
+| `vmware_vms` | `GET /api/vmware-vms/` | Live VMware VM list |
+| `browse_directory` | `GET /api/browse-directory/?path=` | HOST filesystem via SFTP |
+| `vmdk_scan` | `GET /api/vmdk-scan/?path=` | VMDKs in host dir + manifest auto-detect |
+| `peek_archive` | `GET /api/peek-archive/?path=` | Archive contents (VMDK list + VMX specs) |
+| `test_proxmox_host` | `POST /hosts/proxmox/<id>/test/` | Connectivity test for registered host |
+| `test_vmware_host` | `POST /hosts/vmware/<id>/test/` | Connectivity test for registered host |
 
 ### `webui/dashboard/forms.py`
-- `MigrationJobForm` — wizard form with dynamic choices for storage, bridge, VM name, source files
-- `set_storage_choices(choices)` / `set_bridge_choices(choices)` — called from views with live Proxmox data
-
-### `webui/dashboard/models.py`
-- `MigrationJob` — Django model: name, mode, config_profile, vm_name, manifest_path, source_paths, storage, bridge, disk_format, dry_run, status, logs, timestamps
+- `MigrationJobForm` — wizard form; includes hidden `proxmox_host_id`, `vmware_host_id`, `disk_storage_map`, `nic_bridge_map`
+- `ProxmoxHostForm` / `VMwareHostForm` — host registration ModelForms
 
 ---
 
-## 4. Frontend (`templates/dashboard/index.html`)
+## 4. Frontend (`templates/dashboard/wizard.html`)
 
-Implements a **3-state wizard** entirely in vanilla JS (no framework):
+Multi-step wizard in vanilla JS — no framework:
 
-| State | UI element | API called | What happens |
-|---|---|---|---|
-| **A — VMDK Selection** | "Browse Host" button → modal | `GET /api/browse-directory/` | Paramiko SFTP lists HOST filesystem in a modal overlay; `.vmdk` files highlighted blue |
-| **A continued** | "Scan for VMDKs" button | `GET /api/vmdk-scan/` | Finds all `.vmdk` in the host dir, builds checkboxes with host-absolute paths, auto-fills manifest field |
-| **B — Storage** | "Discover Storages & Networks" | `GET /api/proxmox-status/` | Populates storage `<select>` with live Proxmox data |
-| **C — Network** | Same button | same response | Populates bridge `<select>` |
+| Step | What happens |
+|---|---|
+| **Step 1 — Target** | Select registered Proxmox host (or config profile fallback); VMware host shown for VMware mode |
+| **Step 2 — Source** | Browse HOST filesystem via SFTP modal; scan for VMDKs; auto-peek archives |
+| **Step 3 — Options** | Discover live storages/bridges; combobox for storage + bridge; per-disk storage map; per-NIC bridge map |
+| **Submit** | POST to `/launch/` with all hidden fields including `proxmox_host_id`, `vmware_host_id`, `disk_storage_map`, `nic_bridge_map` |
 
-**Top panel:** "Test & Refresh" button also calls `/api/proxmox-status/` and updates the status cards.
+**Sidebar nav:** Dashboard → Hosts → Config Profiles → Browse Disks
 
 ---
 
 ## 5. Docker / Deployment
 
-```yaml
-# docker-compose.yml — three services, one image
-migrate:   runs Django migrations once (service_completed_successfully)
-web:       gunicorn, port 8000
-worker:    python manage.py worker (polls DB for pending jobs)
+```
+docker-compose.yml — three services, one image (entrypoint.sh + CMD)
+
+migrate:  python manage.py migrate + collectstatic  (exits 0 on success)
+web:      gunicorn 2 workers                        (depends_on: migrate)
+worker:   python manage.py worker                   (depends_on: migrate)
 ```
 
+- `entrypoint.sh` — creates runtime directories (`/app/configs`, `/app/data`, `/data/staging`), then `exec "$@"`
+- `migrate` service is the **only** place migrations run — no race condition
+- All three services share the **same** SQLite file via `DJANGO_DB_PATH=/app/data/db.sqlite3` and the `./data` volume mount
+
 **Environment variables:**
+
 | Variable | Default | Purpose |
 |---|---|---|
+| `DJANGO_DB_PATH` | `<BASE_DIR>/data/db.sqlite3` | SQLite file path (pin to shared volume) |
+| `DJANGO_SECRET_KEY` | `change-me` | **Must be changed in production** |
+| `DJANGO_ALLOWED_HOSTS` | `*` | Restrict in production |
 | `VMWARE_TO_PROXMOX_CONFIG` | `/config/config.yaml` | Path to config.yaml inside container |
 | `VMWARE_TO_PROXMOX_CONFIG_DIR` | `/app/configs` | Directory for named config profiles |
 | `VMWARE_TO_PROXMOX_STAGE_ROOT` | `/data/staging` | Fallback staging root for relative paths |
-| `DJANGO_SECRET_KEY` | `change-me` | **Must be changed in production** |
-| `DJANGO_ALLOWED_HOSTS` | `*` | Restrict in production |
 
 **Volume mounts (all services):**
 ```
-./config.yaml   → /config/config.yaml  (read-only)
-./configs/      → /app/configs
-./data/         → /app/data
-./staging/      → /data/staging
-# Optional bind-mount for host VMDKs (uncomment in docker-compose.yml):
+./config.yaml → /config/config.yaml   (read-only)
+./configs/    → /app/configs
+./data/       → /app/data             (contains db.sqlite3)
+./staging/    → /data/staging
+# Optional — expose Proxmox host storage:
 # /var/lib/vz/dump → /mnt/vmware_staging  (read-only)
 ```
 
@@ -172,25 +194,41 @@ worker:    python manage.py worker (polls DB for pending jobs)
 
 ## 6. Configuration (`config.yaml`)
 
-Copy `config.example.yaml` → `config.yaml`. Key sections:
-
 ```yaml
 proxmox:
-  node: pve               # Proxmox node name
-  api_host: 18.0.0.1     # HOST IP — not the LXC IP
+  node: pve
+  default_storage: local-lvm
+  default_bridge: vmbr0
+
+  # Network mapping: VMware network name → Proxmox bridge
+  bridge_map:
+    "VM Network": vmbr0
+    "DMZ": vmbr1
+
+  # Datastore mapping: VMware datastore name → Proxmox storage
+  datastore_map:
+    "datastore1": local-lvm
+    "SSD-datastore": nvme-pool
+
+  api_host: 18.0.0.1
   api_user: root@pam
   api_token_name: migration
-  api_token_value: "UUID-HERE"   # pveum user token add root@pam migration --privsep=0
+  api_token_value: "UUID-HERE"
   api_verify_ssl: false
 
   ssh_enabled: true
-  ssh_host: 18.0.0.1     # same as api_host
+  ssh_host: 18.0.0.1
   ssh_username: root
   ssh_password: ""        # or use ssh_private_key
 
 migration:
   dry_run: true           # always start with true
 ```
+
+**Mapping resolution order:**
+1. Per-job override (wizard Step 3 combobox / per-NIC / per-disk rows) stored in `MigrationJob.nic_bridge_map` / `disk_storage_map`
+2. `bridge_map` / `datastore_map` in `config.yaml`
+3. `default_bridge` / `default_storage`
 
 ---
 
@@ -212,37 +250,45 @@ migration:
 
 ## 8. Known Constraints
 
-1. **LXC isolation** — `qm`, `pvesh`, `pvesm` are NOT available inside the LXC/container. All CLI commands execute on the Proxmox host over SSH via paramiko.
-2. **Host-absolute paths** — `qm importdisk <vmid> <path> <storage>` receives the path as seen by the HOST, not the LXC. The SFTP browser and VMDK scanner always return host-side paths.
-3. **File visibility** — two options:
-   - SSH/SFTP (configured, active by default when `ssh_enabled: true`)
-   - Bind-mount: uncomment `# - /var/lib/vz/dump:/mnt/vmware_staging:ro` in `docker-compose.yml`
-4. **SDN discovery** — bridges come from `GET /nodes/{node}/network` via the REST API or `pvesh` over SSH. `/etc/pve/sdn` is not parsed directly but could be bind-mounted (`/etc/pve:/etc/pve:ro`) into the LXC for direct access.
-5. **SQLite** — used for the job database. Path: `./data/db.sqlite3`. Not suitable for multi-host deployments.
+1. **LXC isolation** — `qm`, `pvesh`, `pvesm` are NOT in the LXC. All mutating CLI calls go over SSH to the Proxmox host.
+2. **Host-absolute paths** — `qm importdisk <vmid> <path> <storage>` takes the path as seen by the HOST. The SFTP browser and VMDK scanner always return host-side paths.
+3. **SQLite concurrency** — SQLite is used for the job DB. The `migrate` service ensures schema is applied once; SQLite `timeout=20` handles write contention between web + worker. Not suitable for multi-host deployments.
+4. **Archive extraction** — archives are extracted on the HOST (not the LXC) via SSH to avoid pulling GBs of disk data. Temp dirs are cleaned after migration.
+5. **SDN discovery** — bridges come from the REST API or `pvesh` over SSH. SDN vnets appear if the API user has permissions.
 
 ---
 
 ## 9. How a Migration Flows (End-to-End)
 
 ```
-User fills wizard (index.html)
+User fills wizard (wizard.html)
+  ↓ Step 1: select ProxmoxHost + optional VMwareHost
+  ↓ Step 2: browse HOST filesystem (SFTP modal) → scan VMDKs
+  ↓ Step 3: discover live storages/bridges → set per-disk / per-NIC overrides
   ↓ POST /launch/
-  MigrationJob created in DB (status=PENDING)
+  MigrationJob created in DB (status=PENDING, proxmox_host_id, vmware_host_id set)
   ↓
 Worker polls DB → finds PENDING job
   ↓ execute_job(job)  [services.py]
-  ↓ engine.run_job(job)  [engine.py]
-  ├── VMware mode: VMwareClient.export_vm() → download VMDK to staging
-  └── Local mode:  use host-absolute path from job.source_paths
+  ↓ _engine_from_job(job)  → builds MigrationEngine from registered host or config file
+  ↓ engine.migrate_local_disks_or_archive() OR engine.migrate_vm()
+  │
+  ├── VMware mode:
+  │     VMwareClient.download_vm_disks() → disks land in local tmpdir
+  │
+  └── Local mode:
+        archive? → extract on HOST via SSH → list VMDKs inside
+        plain VMDK → use host-absolute path directly
   ↓
   ProxmoxClient.create_vm()      → SSH: qm create <vmid> ...
   ProxmoxClient.import_disk()    → SSH: qm importdisk <vmid> <HOST_PATH> <storage>
-  ProxmoxClient.attach_disk()    → SSH: qm set <vmid> --scsi0 ...
-  ProxmoxClient.add_network()    → SSH: qm set <vmid> --net0 virtio,bridge=vmbr0
-  GuestRemediation.run()         → SSH into new VM: fix fstab, install qemu-agent
+  ProxmoxClient.attach_disk()    → SSH: qm set <vmid> --scsiN volume_id
+  ProxmoxClient.add_network()    → SSH: qm set <vmid> --netN virtio,bridge=vmbr0
+  GuestRemediator.write_script() → generates remediation.sh for the guest
+  ProxmoxClient.start_vm()       → SSH: qm start <vmid>
   ↓
   job.status = SUCCEEDED / FAILED
-  Logs written to job.log in DB
+  job.result / job.error / job.logs written to DB
 ```
 
 ---
@@ -251,11 +297,13 @@ Worker polls DB → finds PENDING job
 
 | Task | File(s) to edit |
 |---|---|
-| Add a new migration option / form field | `webui/dashboard/forms.py`, `webui/dashboard/models.py`, new migration file |
+| Add a registered host field | `webui/dashboard/models.py` + new migration + `forms.py` + `hosts.html` |
+| Add a wizard form field | `webui/dashboard/forms.py`, `webui/dashboard/models.py`, new migration, `wizard.html` |
 | Change how Proxmox commands run | `vmware_to_proxmox/proxmox.py` |
 | Change the migration workflow steps | `vmware_to_proxmox/engine.py` |
 | Add a new API endpoint | `webui/dashboard/views.py` + `webui/dashboard/urls.py` |
-| Change the wizard UI / JS state machine | `templates/dashboard/index.html` |
+| Change the wizard UI / JS | `templates/dashboard/wizard.html` |
 | Change styling | `static/dashboard.css` |
 | Add a new config option | `vmware_to_proxmox/config.py` (dataclass + loader) + `config.example.yaml` |
-| Change Docker setup | `docker-compose.yml`, `Dockerfile` |
+| Change Docker setup | `docker-compose.yml`, `Dockerfile`, `entrypoint.sh` |
+| Change network/datastore mapping logic | `vmware_to_proxmox/config.py` (`bridge_for_network`, `storage_for_datastore`) |

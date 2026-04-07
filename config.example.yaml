@@ -13,6 +13,9 @@ proxmox:
   bridge_map:
     "VM Network": vmbr0
     "DMZ": vmbr1
+  datastore_map:
+    "datastore1": local-lvm
+    "SSD-datastore": nvme-pool
   format: qcow2
   boot_firmware: auto
   scsi_controller: virtio-scsi-single

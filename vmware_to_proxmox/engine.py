@@ -107,47 +107,7 @@ class MigrationEngine:
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
             warnings = self.vmware.validate_supported(vm)
-
-        target_storage = self._resolve_storage(storage)
-        target_bridge = bridge or (self.config.bridge_for_network(vm.nics[0].network_name) if vm.nics else self.config.proxmox.default_bridge)
-        target_bridge = self._resolve_bridge(target_bridge)
-        target_format = disk_format or self.config.target_format()
-        firmware = self._resolve_firmware(vm)
-        vmid = self.proxmox.next_vmid()
-
-        nics = []
-        for nic in vm.nics:
-            nics.append(
-                {
-                    "name": nic.label,
-                    "source_network": nic.network_name,
-                    "target_bridge": self._resolve_network_bridge(nic.network_name, bridge),
-                    "mac": nic.mac_address if self.config.proxmox.preserve_mac else "generated",
-                }
-            )
-
-        disks = []
-        for disk in vm.disks:
-            disks.append(
-                {
-                    "label": disk.label,
-                    "source_path": disk.file_name,
-                    "target_format": target_format.value,
-                    "capacity_bytes": str(disk.capacity_bytes),
-                }
-            )
-
-        return MigrationPlan(
-            vm_name=vm.name,
-            vmid=vmid,
-            storage=target_storage,
-            bridge=target_bridge,
-            disk_format=target_format,
-            firmware=firmware,
-            warnings=warnings,
-            nics=nics,
-            disks=disks,
-        )
+        return self._plan_from_vm(vm, warnings, storage, bridge, disk_format)
 
     @staticmethod
     def _minimal_vm_spec(name: str, vmx_specs: Optional[dict] = None) -> VmwareVmSpec:
@@ -238,12 +198,18 @@ class MigrationEngine:
 
         disks = []
         for disk in vm.disks:
+            datastore = getattr(disk, "datastore", "") or ""
+            disk_storage = self._resolve_storage(
+                storage or (self.config.storage_for_datastore(datastore) if datastore else None)
+            )
             disks.append(
                 {
                     "label": disk.label,
                     "source_path": disk.file_name,
                     "target_format": target_format.value,
                     "capacity_bytes": str(disk.capacity_bytes),
+                    "target_storage": disk_storage,
+                    "source_datastore": datastore,
                 }
             )
 
