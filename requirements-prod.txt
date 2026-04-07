@@ -1,0 +1,60 @@
+# Production requirements for VMware-to-Proxmox Migration Tool
+# Optimized for security, performance, and reliability
+
+# Core Django framework
+Django==5.1.2
+gunicorn==22.0.0
+gevent==23.9.1
+
+# Database
+psycopg2-binary==2.9.9
+redis==5.0.1
+
+# VMware integration
+pyvmomi==8.0.2.0.1
+
+# Proxmox integration
+proxmoxer==2.0.1
+paramiko==3.4.0
+
+# Configuration and data handling
+PyYAML==6.0.1
+jsonschema==4.21.1
+
+# HTTP requests
+requests==2.31.0
+urllib3==2.1.0
+
+# Static file serving
+whitenoise==6.7.0
+
+# CLI interface
+click==8.1.7
+
+# Security and validation
+cryptography==42.0.5
+bcrypt==4.1.2
+
+# Monitoring and logging
+structlog==24.2.0
+sentry-sdk==1.40.6
+
+# Performance optimization
+uvloop==0.19.0
+hiredis==2.3.2
+
+# Development and testing (production minimal)
+pytest==8.2.2
+pytest-django==4.8.0
+pytest-asyncio==0.23.6
+coverage==7.5.1
+
+# Code quality
+black==24.4.2
+flake8==7.1.0
+isort==5.13.2
+mypy==1.10.0
+
+# Documentation
+sphinx==7.3.7
+sphinx-rtd-theme==2.0.0

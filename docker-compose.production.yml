@@ -1,0 +1,256 @@
+# Production Docker Compose configuration
+# PostgreSQL backend with enhanced security and monitoring
+
+version: '3.8'
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: vmware-to-proxmox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vmware_to_proxmox
+      POSTGRES_USER: vmware_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./vmware_to_proxmox/schemas/postgresql_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    networks:
+      - migration_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vmware_user -d vmware_to_proxmox"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Redis for caching and session storage
+  redis:
+    image: redis:7-alpine
+    container_name: vmware-to-proxmox-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-change-me-in-production}
+    volumes:
+      - redis_data:/data
+    networks:
+      - migration_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # Database migration service
+  migrate:
+    build: .
+    container_name: vmware-to-proxmox-migrate
+    restart: "no"
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-change-me-in-production}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-change-me-in-production}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-in-production}@redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - migration_network
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+    command: >
+      sh -c "
+        python manage.py migrate --noinput &&
+        python manage.py collectstatic --noinput &&
+        python manage.py createcachetable &&
+        echo 'Migration completed successfully'
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Web application
+  web:
+    build: .
+    container_name: vmware-to-proxmox-web
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-change-me-in-production}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-change-me-in-production}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DJANGO_DEBUG=false
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-in-production}@redis:6379/0
+      - WEB_CONCURRENCY=${WEB_CONCURRENCY:-4}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - migration_network
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+      - static_volume:/app/static
+      - media_volume:/app/media
+    command: >
+      gunicorn webui.wsgi:application 
+      --bind 0.0.0.0:8000 
+      --workers ${WEB_CONCURRENCY:-4}
+      --worker-class gevent
+      --worker-connections 1000
+      --max-requests 1000
+      --max-requests-jitter 100
+      --timeout 300
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
+      --capture-output
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  # Background worker
+  worker:
+    build: .
+    container_name: vmware-to-proxmox-worker
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=webui.settings_production
+      - DJANGO_DB_HOST=postgres
+      - DJANGO_DB_NAME=vmware_to_proxmox
+      - DJANGO_DB_USER=vmware_user
+      - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-change-me-in-production}
+      - DJANGO_DB_PORT=5432
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-change-me-in-production}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-change-me-in-production}@redis:6379/0
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - migration_network
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+      - ./staging:/data/staging
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # For monitoring
+    command: >
+      python manage.py worker 
+      --concurrency ${WORKER_CONCURRENCY:-2}
+      --loglevel=info
+      --max-tasks-per-child=1000
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "worker"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vmware-to-proxmox-prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - migration_network
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  # Grafana for dashboards (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vmware-to-proxmox-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-change-me-in-production}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - migration_network
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+
+networks:
+  migration_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  media_volume:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
