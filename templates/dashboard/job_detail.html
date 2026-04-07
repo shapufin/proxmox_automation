@@ -1,35 +1,125 @@
 {% extends "dashboard/base.html" %}
+{% block title %}Job {{ job.id }} — VMware → Proxmox{% endblock %}
 
 {% block content %}
-<section class="panel">
-  <h2>Job {{ job.id }}</h2>
-  <p><strong>Name:</strong> {{ job.name }}</p>
-  <p><strong>Mode:</strong> {{ job.mode }}</p>
-  <p><strong>Status:</strong> {{ job.status }}</p>
-  <p><strong>VM:</strong> {{ job.vm_name }}</p>
-  <p><strong>Manifest:</strong> {{ job.manifest_path }}</p>
-  <p><strong>Source paths:</strong></p>
-  <ul class="list">
-    {% for path in job.source_paths %}
-      <li>{{ path }}</li>
-    {% empty %}
-      <li>No source paths selected.</li>
-    {% endfor %}
-  </ul>
-  {% if job.status == "pending" %}
-    <p><a class="primary-link" href="/jobs/{{ job.id }}/run/">Run now</a></p>
-  {% endif %}
-</section>
 
-<section class="grid two-up">
-  <article class="panel">
-    <h3>Result</h3>
-    <pre>{{ job.result|default:"{}" }}</pre>
-  </article>
-  <article class="panel">
-    <h3>Error / Logs</h3>
-    <pre>{{ job.error }}
-{{ job.logs }}</pre>
-  </article>
-</section>
+<div class="page-header">
+  <div>
+    <div class="page-title">Job #{{ job.id }} — {{ job.name }}</div>
+    <div class="page-subtitle">
+      {% if job.mode == "vmware" %}<span class="badge badge-info">VMware Direct</span>{% else %}<span class="badge badge-muted">Local Disks</span>{% endif %}
+      {% if job.dry_run %}<span class="badge badge-warning" style="margin-left:6px">Dry Run</span>{% else %}<span class="badge badge-error" style="margin-left:6px">Live</span>{% endif %}
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    {% if job.status == "pending" %}
+      <a class="btn btn-primary" href="/jobs/{{ job.id }}/run/">▶ Run Now</a>
+    {% endif %}
+    <a class="btn btn-secondary" href="/">← Dashboard</a>
+  </div>
+</div>
+
+<div class="grid two-up" style="margin-bottom:20px">
+
+  {# LEFT — timeline #}
+  <div class="panel">
+    <div class="panel-title"><span class="icon">⏱</span> Timeline</div>
+    <div class="timeline">
+      <div class="tl-item">
+        <div class="tl-dot ok">✓</div>
+        <div class="tl-body">
+          <div class="tl-title">Job Created</div>
+          <div class="tl-meta">{{ job.created_at|date:"Y-m-d H:i:s" }}</div>
+        </div>
+      </div>
+      {% if job.started_at %}
+      <div class="tl-item">
+        <div class="tl-dot run">▶</div>
+        <div class="tl-body">
+          <div class="tl-title">Started</div>
+          <div class="tl-meta">{{ job.started_at|date:"Y-m-d H:i:s" }}</div>
+        </div>
+      </div>
+      {% endif %}
+      {% if job.finished_at %}
+      <div class="tl-item">
+        <div class="tl-dot {% if job.status == 'succeeded' %}ok{% else %}err{% endif %}">
+          {% if job.status == "succeeded" %}✓{% else %}✕{% endif %}
+        </div>
+        <div class="tl-body">
+          <div class="tl-title">
+            {% if job.status == "succeeded" %}Succeeded{% else %}Failed{% endif %}
+          </div>
+          <div class="tl-meta">{{ job.finished_at|date:"Y-m-d H:i:s" }}</div>
+        </div>
+      </div>
+      {% else %}
+      <div class="tl-item">
+        <div class="tl-dot {% if job.status == 'running' %}run{% else %}pend{% endif %}">
+          {% if job.status == "running" %}⟳{% else %}…{% endif %}
+        </div>
+        <div class="tl-body">
+          <div class="tl-title">{{ job.get_status_display }}</div>
+          <div class="tl-meta">Updated {{ job.updated_at|date:"H:i:s" }}</div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {# RIGHT — details #}
+  <div class="panel">
+    <div class="panel-title"><span class="icon">📋</span> Job Details</div>
+    <table style="width:100%;font-size:0.88rem;border-collapse:collapse">
+      <tr><td style="color:var(--muted);padding:6px 0;width:130px">VM / Name</td><td style="font-weight:600">{{ job.vm_name|default:"—" }}</td></tr>
+      <tr><td style="color:var(--muted);padding:6px 0">Storage</td><td>{{ job.storage|default:"auto" }}</td></tr>
+      <tr><td style="color:var(--muted);padding:6px 0">Bridge</td><td>{{ job.bridge|default:"auto" }}</td></tr>
+      <tr><td style="color:var(--muted);padding:6px 0">Disk format</td><td>{{ job.disk_format|default:"auto" }}</td></tr>
+      <tr><td style="color:var(--muted);padding:6px 0">Config profile</td><td>{{ job.config_profile|default:"Default" }}</td></tr>
+      {% if job.manifest_path %}
+      <tr><td style="color:var(--muted);padding:6px 0">Manifest</td><td style="font-family:monospace;font-size:0.82rem;word-break:break-all">{{ job.manifest_path }}</td></tr>
+      {% endif %}
+    </table>
+
+    {% if job.source_paths %}
+    <div style="margin-top:14px">
+      <div style="font-size:0.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px">Source Paths</div>
+      <ul class="list">
+        {% for p in job.source_paths %}
+          <li style="font-family:monospace;font-size:0.82rem;padding:3px 0;color:var(--text)">{{ p }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{# Logs & Result #}
+<div class="grid two-up">
+  <div class="panel">
+    <div class="panel-title"><span class="icon">📄</span> Logs</div>
+    {% if job.logs %}
+      <div class="log-box">{{ job.logs }}</div>
+    {% else %}
+      <p class="hint">No logs yet.</p>
+    {% endif %}
+    {% if job.error %}
+      <div style="margin-top:14px">
+        <div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div>
+        <div class="log-box" style="border-color:rgba(239,68,68,.3)">{{ job.error }}</div>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-title"><span class="icon">✅</span> Result</div>
+    {% if job.result %}
+      <div class="log-box">{{ job.result|safe }}</div>
+    {% else %}
+      <p class="hint">No result data yet.</p>
+    {% endif %}
+  </div>
+</div>
+
 {% endblock %}

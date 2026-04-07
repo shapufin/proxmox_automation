@@ -1,0 +1,624 @@
+{% extends "dashboard/base.html" %}
+{% block title %}New Migration — VMware → Proxmox{% endblock %}
+{% block nav_wizard %}active{% endblock %}
+
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <div class="page-title">New Migration</div>
+    <div class="page-subtitle">Follow the steps to configure and launch a VM migration job.</div>
+  </div>
+</div>
+
+<div class="wz-layout">
+
+  {# ── LEFT: Step indicators ── #}
+  <div class="wz-stepper panel" style="padding:20px 16px">
+    <div class="wz-step-indicator active" id="ind-1" onclick="gotoStep(1)">
+      <div class="wz-step-num">1</div>
+      <div class="wz-step-label">Mode &amp; Profile</div>
+    </div>
+    <div class="wz-step-indicator" id="ind-2" onclick="gotoStep(2)">
+      <div class="wz-step-num">2</div>
+      <div class="wz-step-label">Source</div>
+    </div>
+    <div class="wz-step-indicator" id="ind-3" onclick="gotoStep(3)">
+      <div class="wz-step-num">3</div>
+      <div class="wz-step-label">Destination</div>
+    </div>
+    <div class="wz-step-indicator" id="ind-4" onclick="gotoStep(4)">
+      <div class="wz-step-num">4</div>
+      <div class="wz-step-label">Options &amp; Launch</div>
+    </div>
+  </div>
+
+  {# ── RIGHT: Step panels ── #}
+  <div class="wz-panels">
+
+    {# ─── STEP 1: Mode & Profile ─── #}
+    <div class="panel wz-panel active" id="panel-1">
+      <div class="panel-title"><span class="icon">⚙</span> Step 1 — Mode &amp; Profile</div>
+
+      <div class="field">
+        <label for="wz_name">Job name <span style="color:var(--error)">*</span></label>
+        <input type="text" id="wz_name" class="form-input" placeholder="e.g. web-server-01"
+               oninput="syncField('name', this.value)" />
+        <span class="help">A short recognisable label for this migration.</span>
+        <div id="err_name" style="color:var(--error);font-size:0.82rem;display:none"></div>
+      </div>
+
+      <div class="field">
+        <label for="wz_mode">Migration mode <span style="color:var(--error)">*</span></label>
+        <select id="wz_mode" class="form-select" onchange="onModeChange(this.value)">
+          <option value="local">Local Disks — import VMDK files already on the Proxmox host</option>
+          <option value="vmware">VMware Direct — pull live from vCenter / ESXi</option>
+        </select>
+        <span class="help">
+          <strong>Local Disks:</strong> you pre-copy VMDK files to the Proxmox host; this tool imports them via SSH. &nbsp;|&nbsp;
+          <strong>VMware Direct:</strong> connects to vCenter/ESXi with pyvmomi to export the VM automatically.
+        </span>
+      </div>
+
+      <div class="field">
+        <label for="wz_profile">Config profile</label>
+        <select id="wz_profile" class="form-select" onchange="syncField('config_profile', this.value)">
+          <option value="">Default config (config.yaml)</option>
+          {% for p in config_profiles %}
+            <option value="{{ p.stem }}" {% if selected_profile == p.stem %}selected{% endif %}>{{ p.stem }}</option>
+          {% endfor %}
+        </select>
+        <span class="help">Holds your Proxmox and VMware credentials. Manage them in <a href="/configs/">Config Profiles</a>.</span>
+      </div>
+
+      <div class="wz-actions">
+        <button class="btn btn-primary" onclick="validateStep1()">Next: Select Source →</button>
+      </div>
+    </div>
+
+    {# ─── STEP 2: Source ─── #}
+    <div class="panel wz-panel" id="panel-2">
+      <div class="panel-title"><span class="icon">📦</span> Step 2 — Source</div>
+
+      {# VMware direct — VM picker #}
+      <div id="src-vmware" style="display:none">
+        <div class="field">
+          <label>VMware VM to migrate</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="wz_vm_name" class="form-select" onchange="syncField('vm_name', this.value)" style="flex:1">
+              <option value="">— click Fetch VMs —</option>
+            </select>
+            <button class="btn btn-secondary btn-sm" onclick="fetchVMs()">↺ Fetch VMs</button>
+          </div>
+          <span class="help">Lists VMs visible to your VMware credentials. Click Fetch to load them.</span>
+          <div id="err_vm_name" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        </div>
+        <div id="vmware-fetch-status" class="hint" style="margin-bottom:14px"></div>
+      </div>
+
+      {# Local disk — directory browser + VMDK scanner #}
+      <div id="src-local">
+        <div class="field">
+          <label>Host directory containing VMDK files</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input type="text" id="wz_dir" class="form-input" style="flex:1;min-width:200px"
+                   placeholder="/var/lib/vz/dump/myvm"
+                   oninput="syncField('directory', this.value)" />
+            <button class="btn btn-secondary btn-sm" onclick="openBrowser()">📂 Browse</button>
+            <button class="btn btn-primary btn-sm" onclick="scanVmdks()">🔍 Scan VMDKs</button>
+          </div>
+          <span class="help">Enter the <strong>host-side absolute path</strong> (as seen by the Proxmox host, not the LXC). Click Browse to navigate via SSH/SFTP.</span>
+        </div>
+
+        <div id="scan-status" style="margin-bottom:10px"></div>
+
+        <div class="field">
+          <label for="wz_manifest">Manifest file <span style="color:var(--muted);font-weight:400">(auto-detected)</span></label>
+          <input type="text" id="wz_manifest" class="form-input" placeholder="/var/lib/vz/dump/myvm/manifest.json"
+                 oninput="syncField('manifest_path', this.value)" />
+          <span class="help">Auto-filled if <code>manifest.json</code> is found next to the VMDKs. Required for local disk mode.</span>
+          <div id="err_manifest" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        </div>
+
+        <div class="field">
+          <label>Select VMDK files <span style="color:var(--error)">*</span></label>
+          <span class="help" style="margin-bottom:8px;display:block">Paths must be host-absolute (exactly what <code>qm importdisk</code> will receive).</span>
+          <div id="err_source" style="color:var(--error);font-size:0.82rem;display:none;margin-bottom:6px"></div>
+          <div class="file-list" id="vmdk-checklist">
+            <p class="file-empty">Enter a directory above and click Scan VMDKs.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="wz-actions">
+        <button class="btn btn-secondary" onclick="gotoStep(1)">← Back</button>
+        <button class="btn btn-primary" onclick="validateStep2()">Next: Destination →</button>
+      </div>
+    </div>
+
+    {# ─── STEP 3: Destination ─── #}
+    <div class="panel wz-panel" id="panel-3">
+      <div class="panel-title"><span class="icon">🖥</span> Step 3 — Destination</div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="btnDiscover" onclick="discoverProxmox()">🔌 Discover Storages &amp; Networks</button>
+        <span id="discover-status" class="hint"></span>
+      </div>
+
+      <div id="discover-result" style="margin-bottom:16px"></div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="wz_storage">Storage pool <span style="color:var(--error)">*</span></label>
+          <select id="wz_storage" class="form-select" onchange="syncField('storage', this.value)">
+            <option value="">— click Discover first —</option>
+          </select>
+          <span class="help">Where the imported VM disk will be stored on Proxmox.</span>
+          <div id="err_storage" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        </div>
+        <div class="field">
+          <label for="wz_bridge">Network bridge / SDN vnet <span style="color:var(--error)">*</span></label>
+          <select id="wz_bridge" class="form-select" onchange="syncField('bridge', this.value)">
+            <option value="">— click Discover first —</option>
+          </select>
+          <span class="help">The virtual network the VM will be connected to (bridges and SDN vnets both appear).</span>
+          <div id="err_bridge" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="wz_disk_format">Disk format</label>
+        <select id="wz_disk_format" class="form-select" onchange="syncField('disk_format', this.value)">
+          {% for val, label in disk_format_choices %}
+            <option value="{{ val }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+        <span class="help"><strong>Auto</strong> converts to qcow2. Use <strong>raw</strong> for maximum IOPS on LVM/ZFS storage.</span>
+      </div>
+
+      <div class="wz-actions">
+        <button class="btn btn-secondary" onclick="gotoStep(2)">← Back</button>
+        <button class="btn btn-primary" onclick="validateStep3()">Next: Options →</button>
+      </div>
+    </div>
+
+    {# ─── STEP 4: Options & Launch ─── #}
+    <div class="panel wz-panel" id="panel-4">
+      <div class="panel-title"><span class="icon">🚀</span> Step 4 — Options &amp; Launch</div>
+
+      <label class="toggle-row highlight" style="cursor:pointer">
+        <input type="checkbox" id="wz_dry_run" checked onchange="syncField('dry_run', this.checked)">
+        <div class="toggle-label">
+          <strong>🔒 Dry Run (Recommended)</strong>
+          <span>Simulates the full migration without making any changes on Proxmox. Safe to run anytime — always start here.</span>
+        </div>
+      </label>
+
+      <label class="toggle-row" style="cursor:pointer">
+        <input type="checkbox" id="wz_start_after_import" checked onchange="syncField('start_after_import', this.checked)">
+        <div class="toggle-label">
+          <strong>▶ Start VM after import</strong>
+          <span>Automatically power on the new Proxmox VM once the disk import finishes (ignored during dry run).</span>
+        </div>
+      </label>
+
+      {# Summary card #}
+      <div class="panel" style="background:var(--panel2);margin-top:20px;margin-bottom:0" id="summary-card">
+        <div style="font-weight:700;font-size:0.9rem;margin-bottom:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em">Summary</div>
+        <table style="width:100%;font-size:0.88rem;border-collapse:collapse">
+          <tr><td style="color:var(--muted);padding:4px 0;width:120px">Job name</td><td id="sum_name" style="font-weight:600">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Mode</td><td id="sum_mode">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Source</td><td id="sum_source" style="font-family:monospace;font-size:0.84rem">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Storage</td><td id="sum_storage">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Bridge</td><td id="sum_bridge">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Disk format</td><td id="sum_fmt">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">Dry run</td><td id="sum_dry"><span class="badge badge-warning">Yes</span></td></tr>
+        </table>
+      </div>
+
+      <div class="wz-actions">
+        <button class="btn btn-secondary" onclick="gotoStep(3)">← Back</button>
+        <button class="btn btn-primary" id="btnLaunch" onclick="submitJob()">🚀 Create Migration Job</button>
+      </div>
+
+      <div id="launch-error" style="display:none;margin-top:14px"></div>
+    </div>
+
+  </div><!-- /.wz-panels -->
+</div><!-- /.wz-layout -->
+
+{# ── File Browser Modal ── #}
+<div class="modal-backdrop" id="fileBrowserModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">📂 Browse Proxmox Host Filesystem</span>
+      <button class="modal-close" onclick="closeBrowser()">✕</button>
+    </div>
+    <div class="modal-toolbar">
+      <input type="text" id="modalPath" class="form-input"
+             placeholder="/var/lib/vz/dump"
+             style="font-family:monospace;font-size:0.88rem"
+             onkeydown="if(event.key==='Enter') browseDir(this.value)" />
+      <button class="btn btn-secondary btn-sm" onclick="browseDir(document.getElementById('modalPath').value)">Go</button>
+    </div>
+    <div class="modal-body" id="modalListing"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary btn-sm" onclick="useCurrentDir()">✓ Use This Directory</button>
+      <button class="btn btn-secondary btn-sm" onclick="closeBrowser()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+{# Hidden form that does the actual POST to /launch/ #}
+<form method="post" action="/launch/" id="launchForm" style="display:none">
+  {% csrf_token %}
+  <input type="hidden" name="name"             id="f_name">
+  <input type="hidden" name="mode"             id="f_mode"    value="local">
+  <input type="hidden" name="config_profile"   id="f_profile">
+  <input type="hidden" name="vm_name"          id="f_vm_name">
+  <input type="hidden" name="directory"        id="f_dir">
+  <input type="hidden" name="manifest_path"    id="f_manifest">
+  <input type="hidden" name="storage"          id="f_storage">
+  <input type="hidden" name="bridge"           id="f_bridge">
+  <input type="hidden" name="disk_format"      id="f_disk_format" value="">
+  <input type="hidden" name="dry_run"          id="f_dry_run"     value="on">
+  <input type="hidden" name="start_after_import" id="f_start"    value="on">
+  {# source_paths are added dynamically #}
+</form>
+
+<script>
+/* ════════════════════════════════════════════
+   Wizard state
+════════════════════════════════════════════ */
+const state = {
+  name: '', mode: 'local', config_profile: '',
+  vm_name: '', directory: '', manifest_path: '',
+  storage: '', bridge: '', disk_format: '',  // '' = auto
+  dry_run: true, start_after_import: true,
+  source_paths: [],   // array of host-absolute paths
+};
+
+const STEPS = 4;
+let currentStep = 1;
+
+function syncField(key, value) {
+  state[key] = value;
+  updateSummary();
+}
+
+function gotoStep(n) {
+  if (n < 1 || n > STEPS) return;
+  for (let i = 1; i <= STEPS; i++) {
+    document.getElementById(`panel-${i}`).classList.toggle('active', i === n);
+    const ind = document.getElementById(`ind-${i}`);
+    ind.classList.remove('active', 'done');
+    if (i < n) ind.classList.add('done');
+    if (i === n) ind.classList.add('active');
+  }
+  currentStep = n;
+  updateSummary();
+}
+
+function onModeChange(val) {
+  state.mode = val;
+  document.getElementById('src-vmware').style.display = val === 'vmware' ? 'block' : 'none';
+  document.getElementById('src-local').style.display  = val === 'local'  ? 'block' : 'none';
+}
+
+/* ── Pre-fill VM name from URL param ── */
+(function() {
+  const vm = new URLSearchParams(location.search).get('vm');
+  if (vm) {
+    document.getElementById('wz_mode').value = 'vmware';
+    onModeChange('vmware');
+    state.vm_name = vm;
+    state.mode = 'vmware';
+  }
+})();
+
+/* ════════════════════════════════════════════
+   Validation
+════════════════════════════════════════════ */
+function showErr(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+function clearErrors() {
+  ['err_name','err_vm_name','err_manifest','err_source','err_storage','err_bridge'].forEach(id => showErr(id,''));
+}
+
+function validateStep1() {
+  clearErrors();
+  if (!state.name.trim()) { showErr('err_name', 'Job name is required.'); return; }
+  gotoStep(2);
+}
+
+function validateStep2() {
+  clearErrors();
+  if (state.mode === 'vmware') {
+    if (!state.vm_name) { showErr('err_vm_name', 'Select a VMware VM.'); return; }
+  } else {
+    if (!state.manifest_path.trim()) { showErr('err_manifest', 'Manifest path is required (auto-detected after scan).'); return; }
+    if (!state.source_paths.length)  { showErr('err_source',   'Select at least one VMDK file.'); return; }
+  }
+  gotoStep(3);
+}
+
+function validateStep3() {
+  clearErrors();
+  if (!state.storage) { showErr('err_storage', 'Choose a storage pool.'); return; }
+  if (!state.bridge)  { showErr('err_bridge',  'Choose a network bridge.'); return; }
+  gotoStep(4);
+}
+
+/* ════════════════════════════════════════════
+   Summary panel
+════════════════════════════════════════════ */
+function updateSummary() {
+  setText('sum_name',    state.name    || '—');
+  setText('sum_mode',    state.mode === 'vmware' ? 'VMware Direct' : 'Local Disks');
+  if (state.mode === 'vmware') {
+    setText('sum_source',  state.vm_name || '—');
+  } else {
+    const paths = state.source_paths;
+    setText('sum_source', paths.length ? paths.map(p => p.split('/').pop()).join(', ') : '—');
+  }
+  setText('sum_storage', state.storage || '—');
+  setText('sum_bridge',  state.bridge  || '—');
+  setText('sum_fmt',     state.disk_format || 'Auto (qcow2)');
+  const dryEl = document.getElementById('sum_dry');
+  if (dryEl) dryEl.innerHTML = state.dry_run
+    ? '<span class="badge badge-warning">Yes — safe simulation</span>'
+    : '<span class="badge badge-error">No — REAL migration</span>';
+}
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+/* ════════════════════════════════════════════
+   Fetch VMware VMs
+════════════════════════════════════════════ */
+async function fetchVMs() {
+  const st = document.getElementById('vmware-fetch-status');
+  st.textContent = '⟳ Fetching VM list from VMware…';
+  try {
+    const r = await fetch('/api/vmware-vms/');
+    const d = await r.json();
+    const sel = document.getElementById('wz_vm_name');
+    if (!d.ok || !d.vms.length) {
+      st.textContent = d.ok ? 'No VMs found — check VMware credentials.' : 'Error: ' + d.error;
+      return;
+    }
+    sel.innerHTML = '<option value="">— select a VM —</option>';
+    for (const vm of d.vms) {
+      const opt = document.createElement('option');
+      opt.value = vm; opt.textContent = vm;
+      if (vm === state.vm_name) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    if (state.vm_name) syncField('vm_name', state.vm_name);
+    st.textContent = `✓ ${d.vms.length} VM(s) loaded`;
+  } catch(e) {
+    document.getElementById('vmware-fetch-status').textContent = 'Fetch failed: ' + e.message;
+  }
+}
+
+/* ════════════════════════════════════════════
+   Proxmox discovery
+════════════════════════════════════════════ */
+async function discoverProxmox() {
+  const btn    = document.getElementById('btnDiscover');
+  const status = document.getElementById('discover-status');
+  const result = document.getElementById('discover-result');
+  btn.disabled = true;
+  status.textContent = '⟳ Connecting to Proxmox…';
+  result.innerHTML = '';
+  try {
+    const r = await fetch('/api/proxmox-status/?force=1');
+    const d = await r.json();
+    if (!d.ok) {
+      status.textContent = '✗ ' + d.error;
+      return;
+    }
+    status.textContent = `✓ ${d.storages.length} storage(s), ${d.bridges.length} network(s)`;
+    populateSelect('wz_storage', d.storages.map(s => ({
+      value: s.storage,
+      label: s.content ? `${s.storage} (${s.type} · ${s.content} · ${s.available_gb} GB free)` : `${s.storage} (${s.type} · ${s.available_gb} GB free)`,
+    })), state.storage, 'Auto-select storage');
+    populateSelect('wz_bridge',  d.bridges.map(b => ({
+      value: b.name,
+      label: b.vlan_aware ? `${b.name} [VLAN aware]` : b.name,
+    })), state.bridge, 'Auto-select bridge');
+    result.innerHTML = renderInventoryTables(d);
+  } catch(e) {
+    status.textContent = '✗ ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+function populateSelect(id, items, selectedVal, emptyLabel) {
+  const sel = document.getElementById(id);
+  sel.innerHTML = `<option value="">${emptyLabel}</option>`;
+  for (const item of items) {
+    const o = document.createElement('option');
+    o.value = item.value; o.textContent = item.label;
+    if (item.value === selectedVal) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+function renderInventoryTables(d) {
+  let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:0.86rem">';
+  h += '<div><p style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px;letter-spacing:0.08em">💾 Storages</p>';
+  h += '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Free</th></tr></thead><tbody>';
+  if (!d.storages.length) h += '<tr class="no-data"><td colspan="3">None</td></tr>';
+  for (const s of d.storages) {
+    const dot = s.active ? '🟢' : '🔴';
+    h += `<tr><td>${dot} <strong>${esc(s.storage)}</strong></td><td style="color:var(--muted)">${esc(s.type)}</td><td>${s.available_gb} GB</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  h += '<div><p style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px;letter-spacing:0.08em">🌐 Networks / SDN</p>';
+  h += '<table class="table"><thead><tr><th>Name</th><th>Ports</th><th>Tag</th></tr></thead><tbody>';
+  if (!d.bridges.length) h += '<tr class="no-data"><td colspan="3">None</td></tr>';
+  for (const b of d.bridges) {
+    const vlan = b.vlan_aware ? '<span class="badge badge-info">VLAN</span>' : '';
+    h += `<tr><td><strong>${esc(b.name)}</strong></td><td style="color:var(--muted);font-size:0.8rem">${esc(b.ports||'')}</td><td>${vlan}</td></tr>`;
+  }
+  h += '</tbody></table></div></div>';
+  return h;
+}
+
+/* ════════════════════════════════════════════
+   VMDK scanner
+════════════════════════════════════════════ */
+async function scanVmdks() {
+  const path = document.getElementById('wz_dir').value.trim();
+  if (!path) { alert('Enter a host directory path first.'); return; }
+  syncField('directory', path);
+  const box = document.getElementById('scan-status');
+  box.innerHTML = '<span class="hint">⟳ Scanning via SSH…</span>';
+  try {
+    const r = await fetch('/api/vmdk-scan/?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    if (!d.ok) { box.innerHTML = `<div class="message error">Scan failed: ${esc(d.error)}</div>`; return; }
+    if (d.manifest_path) {
+      document.getElementById('wz_manifest').value = d.manifest_path;
+      syncField('manifest_path', d.manifest_path);
+    }
+    if (!d.vmdks.length) {
+      box.innerHTML = `<div class="message warning">No .vmdk files found in <code>${esc(d.path)}</code>.</div>`;
+      return;
+    }
+    box.innerHTML = `<div style="color:var(--success);font-size:0.85rem">✓ Found ${d.vmdks.length} VMDK(s)${d.manifest_path ? ' · manifest detected' : ''}</div>`;
+    buildVmdkCheckboxes(d.vmdks);
+  } catch(e) {
+    box.innerHTML = `<div class="message error">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function buildVmdkCheckboxes(vmdks) {
+  const list = document.getElementById('vmdk-checklist');
+  list.innerHTML = '';
+  state.source_paths = [];
+  vmdks.forEach((f, i) => {
+    const sizeGb = f.size ? ` (${(f.size/1073741824).toFixed(1)} GB)` : '';
+    const lbl = document.createElement('label');
+    lbl.className = 'file-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = f.path; cb.checked = true;
+    cb.addEventListener('change', rebuildSourcePaths);
+    lbl.appendChild(cb);
+    const sp = document.createElement('span');
+    sp.textContent = ` ${f.name}${sizeGb}`;
+    lbl.appendChild(sp);
+    list.appendChild(lbl);
+    state.source_paths.push(f.path);
+  });
+}
+
+function rebuildSourcePaths() {
+  state.source_paths = Array.from(
+    document.querySelectorAll('#vmdk-checklist input[type=checkbox]:checked')
+  ).map(cb => cb.value);
+}
+
+/* ════════════════════════════════════════════
+   File browser modal
+════════════════════════════════════════════ */
+function openBrowser() {
+  const start = document.getElementById('wz_dir').value || '/';
+  document.getElementById('modalPath').value = start;
+  document.getElementById('fileBrowserModal').classList.add('open');
+  browseDir(start);
+}
+function closeBrowser() {
+  document.getElementById('fileBrowserModal').classList.remove('open');
+}
+function useCurrentDir() {
+  const path = document.getElementById('modalPath').value;
+  document.getElementById('wz_dir').value = path;
+  syncField('directory', path);
+  closeBrowser();
+  scanVmdks();
+}
+document.getElementById('fileBrowserModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeBrowser();
+});
+
+async function browseDir(path) {
+  if (!path) path = '/';
+  document.getElementById('modalPath').value = path;
+  const listing = document.getElementById('modalListing');
+  listing.innerHTML = '<p style="padding:12px;color:var(--muted)">Loading…</p>';
+  try {
+    const r = await fetch('/api/browse-directory/?path=' + encodeURIComponent(path));
+    const d = await r.json();
+    if (!d.ok) { listing.innerHTML = `<div style="padding:12px;color:var(--error)">${esc(d.error)}</div>`; return; }
+    document.getElementById('modalPath').value = d.path;
+    const parent = d.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
+    let html = '';
+    if (d.path !== parent) {
+      html += `<div class="file-item" onclick="browseDir(${JSON.stringify(parent)})" style="cursor:pointer"><span>⬆ <em style="color:var(--muted)">..</em></span></div>`;
+    }
+    for (const f of d.folders) {
+      const name = f.replace(/.*[\/\\]/, '');
+      html += `<div class="file-item" onclick="browseDir(${JSON.stringify(f)})" style="cursor:pointer"><span>📁 <strong>${esc(name)}</strong></span></div>`;
+    }
+    for (const f of d.files) {
+      const isVmdk = f.name.toLowerCase().endsWith('.vmdk');
+      const sz = f.size ? ` — ${(f.size/1073741824).toFixed(1)} GB` : '';
+      const style = isVmdk ? 'color:#60a5fa;font-weight:600' : 'color:var(--muted)';
+      html += `<div class="file-item" style="cursor:default"><span style="${style}">📄 ${esc(f.name)}${esc(sz)}</span></div>`;
+    }
+    if (!d.folders.length && !d.files.length) html = '<p style="padding:12px;color:var(--muted)">Empty directory</p>';
+    listing.innerHTML = html;
+  } catch(e) {
+    listing.innerHTML = `<div style="padding:12px;color:var(--error)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ════════════════════════════════════════════
+   Form submission
+════════════════════════════════════════════ */
+function submitJob() {
+  const errBox = document.getElementById('launch-error');
+  errBox.style.display = 'none';
+
+  // Final validation
+  if (!state.name.trim())  { errBox.innerHTML = '<div class="message error">Job name is missing.</div>';    errBox.style.display='block'; return; }
+  if (state.mode === 'local') {
+    if (!state.manifest_path) { errBox.innerHTML = '<div class="message error">Manifest path is missing.</div>'; errBox.style.display='block'; return; }
+    if (!state.source_paths.length) { errBox.innerHTML = '<div class="message error">No VMDK files selected.</div>'; errBox.style.display='block'; return; }
+  }
+
+  const form = document.getElementById('launchForm');
+  document.getElementById('f_name').value     = state.name;
+  document.getElementById('f_mode').value     = state.mode;
+  document.getElementById('f_profile').value  = state.config_profile;
+  document.getElementById('f_vm_name').value  = state.vm_name;
+  document.getElementById('f_dir').value      = state.directory;
+  document.getElementById('f_manifest').value = state.manifest_path;
+  document.getElementById('f_storage').value  = state.storage;
+  document.getElementById('f_bridge').value   = state.bridge;
+  document.getElementById('f_disk_format').value = state.disk_format || '';
+  document.getElementById('f_dry_run').value  = state.dry_run ? 'on' : '';
+  document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
+
+  // Remove previously injected source_paths inputs
+  form.querySelectorAll('input[name=source_paths]').forEach(el => el.remove());
+  for (const p of state.source_paths) {
+    const inp = document.createElement('input');
+    inp.type = 'hidden'; inp.name = 'source_paths'; inp.value = p;
+    form.appendChild(inp);
+  }
+  form.submit();
+}
+
+/* ── helpers ── */
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
+
+{% endblock %}

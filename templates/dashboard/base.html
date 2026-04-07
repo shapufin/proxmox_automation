@@ -6,27 +6,89 @@
     <title>{% block title %}VMware → Proxmox Migration{% endblock %}</title>
     <link rel="stylesheet" href="/static/dashboard.css" />
   </head>
-  <body>
-    <header class="topbar">
-      <div class="topbar-brand">
-        <div class="eyebrow">Migration Tool</div>
-        <h1>VMware → Proxmox</h1>
-      </div>
-      <nav class="nav">
-        <a href="/">🏠 Dashboard</a>
-        <a href="/browse/">📁 Browse Disks</a>
-        <a href="/configs/">⚙️ Configs</a>
-      </nav>
-    </header>
-    <main class="container">
-      {% if messages %}
-        <div class="messages">
-          {% for message in messages %}
-            <div class="message {{ message.tags }}">{{ message }}</div>
-          {% endfor %}
+  <body class="app-layout">
+
+    <!-- ── SIDEBAR ── -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon">⇒</div>
+        <div>
+          <div class="brand-title">VMware → Proxmox</div>
+          <div class="brand-sub">Migration Tool</div>
         </div>
-      {% endif %}
-      {% block content %}{% endblock %}
-    </main>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="/" class="nav-item {% block nav_dashboard %}{% endblock %}">
+          <span class="nav-icon">⊞</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="/wizard/" class="nav-item {% block nav_wizard %}{% endblock %}">
+          <span class="nav-icon">⚡</span>
+          <span>New Migration</span>
+        </a>
+        <a href="/browse/" class="nav-item {% block nav_browse %}{% endblock %}">
+          <span class="nav-icon">📁</span>
+          <span>Browse Disks</span>
+        </a>
+        <a href="/configs/" class="nav-item {% block nav_configs %}{% endblock %}">
+          <span class="nav-icon">⚙</span>
+          <span>Config Profiles</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="conn-indicator" id="sidebarConnStatus">
+          <span class="conn-dot" id="sidebarDot"></span>
+          <span id="sidebarConnLabel">Checking…</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── MAIN CONTENT ── -->
+    <div class="app-main">
+      <!-- mobile topbar -->
+      <header class="mobile-bar">
+        <button class="hamburger" onclick="document.body.classList.toggle('sidebar-open')" aria-label="Menu">☰</button>
+        <span class="mobile-title">VMware → Proxmox</span>
+      </header>
+
+      <main class="page-content">
+        {% if messages %}
+          <div class="messages">
+            {% for message in messages %}
+              <div class="message {{ message.tags }}">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+    <script>
+    /* Sidebar connection indicator — pings /api/proxmox-status/ silently */
+    (function() {
+      const dot   = document.getElementById('sidebarDot');
+      const label = document.getElementById('sidebarConnLabel');
+      async function ping() {
+        try {
+          const r = await fetch('/api/proxmox-status/');
+          const d = await r.json();
+          if (d.ok) {
+            dot.className   = 'conn-dot conn-ok';
+            label.textContent = `${d.storages.length} storages · ${d.bridges.length} nets`;
+          } else {
+            dot.className   = 'conn-dot conn-err';
+            label.textContent = 'Proxmox unreachable';
+          }
+        } catch(e) {
+          dot.className   = 'conn-dot conn-err';
+          label.textContent = 'No connection';
+        }
+      }
+      ping();
+      setInterval(ping, 60000);
+    })();
+    </script>
   </body>
 </html>

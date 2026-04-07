@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from django.contrib import messages
@@ -25,6 +26,9 @@ from .services import (
     resolve_stage_path,
     save_config_profile,
 )
+
+_PROXMOX_STATUS_CACHE: dict[str, object] = {}
+_PROXMOX_STATUS_TTL = 30  # seconds
 
 
 def _empty_inventory() -> dict[str, list[object]]:
@@ -240,12 +244,20 @@ def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:
 
 @require_GET
 def proxmox_status(request: HttpRequest) -> JsonResponse:
-    """Live Proxmox connectivity check — returns storages, bridges, and any error."""
+    """Live Proxmox connectivity check — returns storages, bridges, and any error.
+    Pass ?force=1 to bypass the 30-second cache and force a fresh connection."""
+    force = request.GET.get("force", "") in {"1", "true"}
+    now = time.monotonic()
+    cached = _PROXMOX_STATUS_CACHE
+    if not force and cached.get("ok") and (now - float(cached.get("ts", 0))) < _PROXMOX_STATUS_TTL:
+        return JsonResponse({k: v for k, v in cached.items() if k != "ts"})
     try:
         engine = get_engine()
+        if force:
+            engine.proxmox.reset()  # drop stale API + SSH connections
         storages = engine.proxmox.list_storages()
         bridges = engine.proxmox.list_bridges()
-        return JsonResponse({
+        payload: dict[str, object] = {
             "ok": True,
             "storages": [
                 {
@@ -266,9 +278,39 @@ def proxmox_status(request: HttpRequest) -> JsonResponse:
                 }
                 for b in bridges
             ],
-        })
+        }
+        _PROXMOX_STATUS_CACHE.clear()
+        _PROXMOX_STATUS_CACHE.update(payload)
+        _PROXMOX_STATUS_CACHE["ts"] = now
+        return JsonResponse(payload)
     except Exception as exc:  # noqa: BLE001
+        _PROXMOX_STATUS_CACHE.clear()
         return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+
+
+@require_GET
+def vmware_vms(request: HttpRequest) -> JsonResponse:
+    """Return the list of VMware VMs available for direct migration."""
+    try:
+        engine = get_engine()
+        vms = engine.inventory().get("vmware_vms", [])
+        return JsonResponse({"ok": True, "vms": list(vms)})
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc), "vms": []}, status=200)
+
+
+def wizard(request: HttpRequest) -> HttpResponse:
+    """Dedicated migration wizard page."""
+    profile_name = request.GET.get("profile", "")
+    return render(
+        request,
+        "dashboard/wizard.html",
+        {
+            "config_profiles": list_config_profiles(),
+            "selected_profile": profile_name,
+            "disk_format_choices": [("", "Auto (qcow2)"), ("qcow2", "qcow2"), ("raw", "raw")],
+        },
+    )
 
 
 @require_GET

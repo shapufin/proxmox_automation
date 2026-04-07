@@ -49,12 +49,50 @@ class ProxmoxClient:
         self.api_token_value = api_token_value
         self.api_verify_ssl = api_verify_ssl
         self._proxmox_api: Any = None
+        self._ssh_client: Optional[paramiko.SSHClient] = None
 
     _API_UNAVAILABLE = object()  # sentinel: tried and failed, don't retry
 
+    def reset(self) -> None:
+        """Reset all cached connections so the next call re-establishes them.
+        Call this before a user-triggered refresh to force a clean reconnect."""
+        self._proxmox_api = None
+        self._close_ssh()
+
+    def _close_ssh(self) -> None:
+        if self._ssh_client is not None:
+            try:
+                self._ssh_client.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._ssh_client = None
+
+    def _get_ssh_client(self) -> paramiko.SSHClient:
+        """Return a connected paramiko SSHClient, reusing an existing one if still active."""
+        if self._ssh_client is not None:
+            transport = self._ssh_client.get_transport()
+            if transport is not None and transport.is_active():
+                return self._ssh_client
+            self._close_ssh()
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        connect_kwargs: dict[str, Any] = {
+            "hostname": self.ssh_host,
+            "port": self.ssh_port,
+            "username": self.ssh_username,
+        }
+        if self.ssh_private_key:
+            connect_kwargs["key_filename"] = self.ssh_private_key
+        elif self.ssh_password:
+            connect_kwargs["password"] = self.ssh_password
+        client.connect(**connect_kwargs)
+        self._ssh_client = client
+        return self._ssh_client
+
     def _api_client(self) -> Any:
         """Return a proxmoxer ProxmoxAPI instance, or None if unavailable.
-        Uses a sentinel to avoid retrying failed connections on every call."""
+        Uses a sentinel to avoid retrying failed connections on every call.
+        Call reset() to clear the sentinel and allow a fresh attempt."""
         if self._proxmox_api is self._API_UNAVAILABLE:
             return None
         if self._proxmox_api is not None:
@@ -101,19 +139,8 @@ class ProxmoxClient:
 
     def _run_remote(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(x) for x in args)
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            connect_kwargs: dict[str, Any] = {
-                "hostname": self.ssh_host,
-                "port": self.ssh_port,
-                "username": self.ssh_username,
-            }
-            if self.ssh_private_key:
-                connect_kwargs["key_filename"] = self.ssh_private_key
-            elif self.ssh_password:
-                connect_kwargs["password"] = self.ssh_password
-            client.connect(**connect_kwargs)
+            client = self._get_ssh_client()
             stdin, stdout, stderr = client.exec_command(command)
             exit_code = stdout.channel.recv_exit_status()
             out = stdout.read().decode("utf-8", errors="replace")
@@ -124,8 +151,11 @@ class ProxmoxClient:
                     f"Command failed: {command}\nSTDOUT: {out}\nSTDERR: {err}"
                 )
             return proc
-        finally:
-            client.close()
+        except ProxmoxClientError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._close_ssh()  # drop broken connection so next call reconnects
+            raise ProxmoxClientError(f"SSH command failed: {exc}") from exc
 
     def ensure_prerequisites(self) -> None:
         """When SSH is enabled the binaries live on the remote host, not locally.
@@ -184,19 +214,25 @@ class ProxmoxClient:
         proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
         return self._parse_bridges(json.loads(proc.stdout or "[]"))
 
-    @staticmethod
-    def _parse_bridges(data: list[dict[str, Any]]) -> list[ProxmoxBridgeSpec]:
+    _BRIDGE_TYPES = {"bridge", "OVSBridge", "vnet"}  # include SDN vnets and OVS bridges
+
+    @classmethod
+    def _parse_bridges(cls, data: list[dict[str, Any]]) -> list[ProxmoxBridgeSpec]:
         bridges: list[ProxmoxBridgeSpec] = []
         for row in data:
-            if row.get("type") != "bridge":
+            iface = str(row.get("iface", "") or row.get("name", "")).strip()
+            if not iface:
+                continue
+            row_type = str(row.get("type", ""))
+            if row_type not in cls._BRIDGE_TYPES:
                 continue
             bridges.append(
                 ProxmoxBridgeSpec(
-                    name=str(row.get("iface", "")),
+                    name=iface,
                     active=bool(row.get("active", False)),
                     vlan_aware=str(row.get("vlan_aware", "0")) in {"1", "true", "True"},
-                    bridge_ports=str(row.get("bridge_ports", "")),
-                    comments=str(row.get("comments", "")),
+                    bridge_ports=str(row.get("bridge_ports", "") or ""),
+                    comments=str(row.get("comments", "") or ""),
                 )
             )
         return bridges
@@ -349,19 +385,8 @@ class ProxmoxClient:
                 "folders": [str(e) for e in entries if e.is_dir()],
                 "files": [{"path": str(e), "name": e.name, "size": e.stat().st_size} for e in entries if e.is_file()],
             }
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        connect_kwargs: dict[str, Any] = {
-            "hostname": self.ssh_host,
-            "port": self.ssh_port,
-            "username": self.ssh_username,
-        }
-        if self.ssh_private_key:
-            connect_kwargs["key_filename"] = self.ssh_private_key
-        elif self.ssh_password:
-            connect_kwargs["password"] = self.ssh_password
         try:
-            client.connect(**connect_kwargs)
+            client = self._get_ssh_client()
             sftp = client.open_sftp()
             try:
                 attrs = sftp.listdir_attr(remote_path)
@@ -376,8 +401,9 @@ class ProxmoxClient:
                 else:
                     files.append({"path": full, "name": a.filename, "size": a.st_size or 0})
             return {"path": remote_path, "folders": folders, "files": files}
-        finally:
-            client.close()
+        except Exception as exc:  # noqa: BLE001
+            self._close_ssh()
+            raise ProxmoxClientError(f"SFTP listing failed: {exc}") from exc
 
     def read_remote_file(self, remote_path: str) -> str:
         """Read a text file from the Proxmox HOST via SFTP. Returns empty string on error."""
@@ -386,23 +412,11 @@ class ProxmoxClient:
                 return Path(remote_path).read_text(encoding="utf-8", errors="replace")
             except Exception:  # noqa: BLE001
                 return ""
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        connect_kwargs: dict[str, Any] = {
-            "hostname": self.ssh_host,
-            "port": self.ssh_port,
-            "username": self.ssh_username,
-        }
-        if self.ssh_private_key:
-            connect_kwargs["key_filename"] = self.ssh_private_key
-        elif self.ssh_password:
-            connect_kwargs["password"] = self.ssh_password
         try:
-            client.connect(**connect_kwargs)
+            client = self._get_ssh_client()
             sftp = client.open_sftp()
             with sftp.open(remote_path, "r") as fh:
                 return fh.read().decode("utf-8", errors="replace")
         except Exception:  # noqa: BLE001
+            self._close_ssh()
             return ""
-        finally:
-            client.close()
