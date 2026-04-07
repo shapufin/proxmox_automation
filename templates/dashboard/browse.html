@@ -1,0 +1,38 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<section class="panel">
+  <h2>Browse Staging Files</h2>
+  <form method="get" class="form inline">
+    {{ form.as_p }}
+    <button type="submit" class="primary">Open</button>
+  </form>
+  <p class="hint">Current directory: <code>{{ directory }}</code></p>
+</section>
+
+<section class="grid two-up">
+  <article class="panel">
+    <h3>Folders</h3>
+    <ul class="list">
+      {% if directory != "" %}
+        <li><a href="/browse/?directory=">..</a></li>
+      {% endif %}
+      {% for folder in folders %}
+        <li><a href="/browse/?directory={{ folder|urlencode }}">{{ folder.name }}</a></li>
+      {% empty %}
+        <li>No subfolders.</li>
+      {% endfor %}
+    </ul>
+  </article>
+  <article class="panel">
+    <h3>Files</h3>
+    <ul class="list">
+      {% for file in files %}
+        <li>{{ file.name }}</li>
+      {% empty %}
+        <li>No files found.</li>
+      {% endfor %}
+    </ul>
+  </article>
+</section>
+{% endblock %}

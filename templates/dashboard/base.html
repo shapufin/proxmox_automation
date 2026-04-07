@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VMware to Proxmox</title>
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">VMware to Proxmox</div>
+        <h1>Migration Control Center</h1>
+      </div>
+      <nav class="nav">
+        <a href="/">Dashboard</a>
+        <a href="/browse/">Browse Disks</a>
+        <a href="/configs/">Configs</a>
+      </nav>
+    </header>
+    <main class="container">
+      {% if messages %}
+        <section class="messages">
+          {% for message in messages %}
+            <div class="message {{ message.tags }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

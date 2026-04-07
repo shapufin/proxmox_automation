@@ -1,0 +1,131 @@
+{% extends "dashboard/base.html" %}
+
+{% block content %}
+<section class="grid two-up">
+  <article class="panel">
+    <h2>Inventory</h2>
+    <h3>VMware VMs</h3>
+    <ul class="list">
+      {% for vm in inventory.vmware_vms %}
+        <li>{{ vm }}</li>
+      {% empty %}
+        <li>No VMware VMs found.</li>
+      {% endfor %}
+    </ul>
+    <h3>Proxmox Storages</h3>
+    <ul class="list">
+      {% for storage in inventory.proxmox_storages %}
+        <li>{{ storage.storage }} — {{ storage.content }}</li>
+      {% empty %}
+        <li>No storages found.</li>
+      {% endfor %}
+    </ul>
+    <h3>Proxmox Bridges</h3>
+    <ul class="list">
+      {% for bridge in inventory.proxmox_bridges %}
+        <li>{{ bridge.name }}{% if bridge.vlan_aware %} (VLAN aware){% endif %}</li>
+      {% empty %}
+        <li>No bridges found.</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="panel">
+    <h2>Launch Migration Job</h2>
+    <p class="hint">Selected config profiles are stored as YAML files in the GUI config directory. You can edit them from the <a href="/configs/">Configs</a> page.</p>
+    <form method="get" action="/" class="form inline" style="margin-bottom: 18px;">
+      <label>
+        Staging directory
+        <input type="text" name="directory" value="{{ form.directory.value|default:'' }}" placeholder="/data/staging/vm-01" />
+      </label>
+      <button type="submit" class="primary">Load Disks</button>
+    </form>
+
+    <form method="post" action="/launch/" class="form">
+      {% csrf_token %}
+      {{ form.directory.as_hidden }}
+      <p>
+        <label for="id_name">Job name</label>
+        {{ form.name }}
+        {{ form.name.errors }}
+      </p>
+      <p>
+        <label for="id_mode">Mode</label>
+        {{ form.mode }}
+      </p>
+      <p>
+        <label for="id_config_profile">Config profile</label>
+        {{ form.config_profile }}
+      </p>
+      <p>
+        <label for="id_vm_name">VM name</label>
+        {{ form.vm_name }}
+        {{ form.vm_name.errors }}
+      </p>
+      <p>
+        <label for="id_manifest_path">Manifest path</label>
+        {{ form.manifest_path }}
+        {{ form.manifest_path.errors }}
+      </p>
+      <p>
+        <label for="id_storage">Storage</label>
+        {{ form.storage }}
+      </p>
+      <p>
+        <label for="id_bridge">Bridge</label>
+        {{ form.bridge }}
+      </p>
+      <p>
+        <label for="id_disk_format">Disk format</label>
+        {{ form.disk_format }}
+      </p>
+      <p>
+        <label>
+          {{ form.dry_run }} Dry run
+        </label>
+      </p>
+      <p>
+        <label>
+          {{ form.start_after_import }} Start VM after import
+        </label>
+      </p>
+      <div class="panel nested">
+        <h3>Local disk selection</h3>
+        <p class="hint">Select one or more staged disk files from the loaded directory.</p>
+        {{ form.source_paths.errors }}
+        <div class="checkbox-list">
+          {% for choice in form.source_paths %}
+            <label class="checkbox-item">{{ choice.tag }} <span>{{ choice.choice_label }}</span></label>
+          {% empty %}
+            <p class="hint">No staged files found in the current directory.</p>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="hint">For local mode, load the staging directory and select the disk files you copied to Proxmox.</div>
+      <button type="submit" class="primary">Create Job</button>
+    </form>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Recent Jobs</h2>
+  <table class="table">
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Mode</th><th>Status</th><th>Updated</th></tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.id }}/">{{ job.id }}</a></td>
+          <td>{{ job.name }}</td>
+          <td>{{ job.mode }}</td>
+          <td>{{ job.status }}</td>
+          <td>{{ job.updated_at }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5">No jobs yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

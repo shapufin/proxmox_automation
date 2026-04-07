@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from django.contrib import messages
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+
+from vmware_to_proxmox.models import DiskFormat
+
+from .forms import ConfigProfileForm, DiskBrowseForm, MigrationJobForm
+from .models import JobStatus, MigrationJob, MigrationMode
+from .services import (
+    config_profile_choices,
+    execute_job,
+    file_choice_items,
+    get_engine,
+    list_config_profiles,
+    list_stage_entries,
+    load_config_profile,
+    resolve_config_profile_path,
+    resolve_stage_path,
+    save_config_profile,
+)
+
+
+def _job_form(directory: str = "", vm_choices: list[tuple[str, str]] | None = None) -> MigrationJobForm:
+    form = MigrationJobForm(initial={"directory": directory})
+    stage_view = list_stage_entries(directory)
+    form.set_source_choices(file_choice_items(stage_view["files"]))
+    form.set_config_profile_choices(config_profile_choices())
+    form.set_vm_choices(vm_choices or [])
+    return form
+
+
+def _config_form(profile_name: str = "") -> ConfigProfileForm:
+    content = load_config_profile(profile_name)
+    form = ConfigProfileForm(initial={"name": profile_name, "content": content})
+    return form
+
+
+def _render_dashboard(
+    request: HttpRequest,
+    form: MigrationJobForm,
+    inventory: dict[str, object],
+    config_form: ConfigProfileForm | None = None,
+) -> HttpResponse:
+    return render(
+        request,
+        "dashboard/index.html",
+        {
+            "inventory": inventory,
+            "jobs": MigrationJob.objects.all()[:20],
+            "form": form,
+            "config_profiles": list_config_profiles(),
+            "config_form": config_form or _config_form(),
+        },
+    )
+
+
+def dashboard(request: HttpRequest) -> HttpResponse:
+    directory = request.GET.get("directory", "")
+    profile_name = request.GET.get("profile", "")
+    engine = get_engine()
+    inventory = engine.inventory()
+    vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
+    return _render_dashboard(request, _job_form(directory, vm_choices), inventory, _config_form(profile_name))
+
+
+def browse_disks(request: HttpRequest) -> HttpResponse:
+    form = DiskBrowseForm(request.GET or None)
+    directory = form.data.get("directory", "") if form.is_bound else ""
+    stage_view = list_stage_entries(directory)
+    files = stage_view["files"]
+    nested_dirs = stage_view["folders"]
+    return render(
+        request,
+        "dashboard/browse.html",
+        {
+            "form": form,
+            "directory": str(stage_view["directory"]),
+            "folders": nested_dirs,
+            "files": files,
+            "file_choices": file_choice_items(files),
+        },
+    )
+
+
+def launch_job(request: HttpRequest) -> HttpResponse:
+    if request.method != "POST":
+        return redirect("dashboard:index")
+
+    inventory = get_engine().inventory()
+    vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
+    form = MigrationJobForm(request.POST)
+    directory = request.POST.get("directory", "")
+    stage_view = list_stage_entries(directory)
+    form.set_source_choices(file_choice_items(stage_view["files"]))
+    form.set_config_profile_choices(config_profile_choices())
+    form.set_vm_choices(vm_choices)
+
+    if form.is_valid():
+        job = MigrationJob.objects.create(
+            name=form.cleaned_data["name"],
+            mode=form.cleaned_data["mode"],
+            config_profile=form.cleaned_data.get("config_profile", ""),
+            vm_name=form.cleaned_data.get("vm_name", ""),
+            manifest_path=form.cleaned_data.get("manifest_path", ""),
+            source_paths=form.normalized_source_paths(),
+            storage=form.cleaned_data.get("storage", ""),
+            bridge=form.cleaned_data.get("bridge", ""),
+            disk_format=form.cleaned_data.get("disk_format", ""),
+            dry_run=bool(form.cleaned_data.get("dry_run", False)),
+            start_after_import=bool(form.cleaned_data.get("start_after_import", True)),
+            status=JobStatus.PENDING,
+        )
+        messages.success(request, f"Created job {job.id}. The worker will pick it up.")
+        return redirect("dashboard:job_detail", job_id=job.id)
+
+    messages.error(request, "Please fix the highlighted errors.")
+    config_form = _config_form(form.cleaned_data.get("config_profile", "") if hasattr(form, "cleaned_data") else "")
+    return _render_dashboard(request, form, inventory, config_form)
+
+
+def config_profile_editor(request: HttpRequest) -> HttpResponse:
+    selected = request.GET.get("profile", "")
+    return render(
+        request,
+        "dashboard/config_editor.html",
+        {
+            "profiles": list_config_profiles(),
+            "form": _config_form(selected),
+        },
+    )
+
+
+def save_profile(request: HttpRequest) -> HttpResponse:
+    if request.method != "POST":
+        return redirect("dashboard:config_profiles")
+    form = ConfigProfileForm(request.POST)
+    if form.is_valid():
+        try:
+            path = save_config_profile(form.cleaned_data["name"], form.cleaned_data["content"])
+            messages.success(request, f"Saved profile {path.name}.")
+            return redirect("dashboard:config_profiles")
+        except Exception as exc:  # noqa: BLE001
+            form.add_error(None, str(exc))
+    return render(
+        request,
+        "dashboard/config_editor.html",
+        {
+            "profiles": list_config_profiles(),
+            "form": form,
+        },
+    )
+
+
+def job_detail(request: HttpRequest, job_id: int) -> HttpResponse:
+    job = get_object_or_404(MigrationJob, pk=job_id)
+    return render(request, "dashboard/job_detail.html", {"job": job})
+
+
+def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:
+    job = get_object_or_404(MigrationJob, pk=job_id)
+    if job.status != JobStatus.PENDING:
+        messages.info(request, "This job is not pending.")
+        return redirect("dashboard:job_detail", job_id=job.id)
+    job.status = JobStatus.RUNNING
+    job.started_at = timezone.now()
+    job.save(update_fields=["status", "started_at", "updated_at"])
+    try:
+        execute_job(job)
+        messages.success(request, f"Job {job.id} completed.")
+    except Exception as exc:  # noqa: BLE001
+        job.status = JobStatus.FAILED
+        job.error = str(exc)
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "error", "finished_at", "updated_at"])
+        messages.error(request, f"Job {job.id} failed: {exc}")
+    return redirect("dashboard:job_detail", job_id=job.id)

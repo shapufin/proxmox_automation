@@ -1,0 +1,127 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --panel: #111a2e;
+  --border: #25304a;
+  --text: #e5eefc;
+  --muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-strong: #3b82f6;
+  --success: #22c55e;
+  --error: #ef4444;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top, #17213a, var(--bg));
+  color: var(--text);
+  min-height: 100vh;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px 32px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(8, 15, 29, 0.8);
+  backdrop-filter: blur(12px);
+}
+.eyebrow { color: var(--muted); text-transform: uppercase; letter-spacing: 0.16em; font-size: 0.75rem; }
+h1, h2, h3 { margin-top: 0; }
+.container { padding: 32px; max-width: 1440px; margin: 0 auto; }
+.grid { display: grid; gap: 20px; }
+.two-up { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.panel {
+  background: rgba(17, 26, 46, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.25);
+}
+.panel.nested {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(11, 19, 36, 0.72);
+}
+.list { margin: 0; padding-left: 18px; color: var(--muted); }
+.list li { margin-bottom: 8px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { padding: 12px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.table tbody tr:hover { background: rgba(96, 165, 250, 0.06); }
+.form p { display: flex; flex-direction: column; margin: 0 0 12px; }
+.form input, .form select, .form textarea {
+  background: #0b1324;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.form input:focus, .form select:focus, .form textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+}
+.primary, .primary-link {
+  display: inline-block;
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(59, 130, 246, 0.24);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.primary:hover, .primary-link:hover {
+  text-decoration: none;
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(59, 130, 246, 0.30);
+}
+.messages { display: grid; gap: 10px; margin-bottom: 20px; }
+.message { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); }
+.message.success { border-color: rgba(34,197,94,.5); color: #bbf7d0; }
+.message.error { border-color: rgba(239,68,68,.5); color: #fecaca; }
+.hint { color: var(--muted); font-size: 0.92rem; }
+pre { white-space: pre-wrap; word-break: break-word; }
+.inline { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.inline p { display: inline-flex; margin-right: 10px; }
+.nav { display: flex; flex-wrap: wrap; gap: 12px; }
+.nav a {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+}
+.nav a:hover { background: rgba(96,165,250,0.14); text-decoration: none; }
+.checkbox-list {
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(11, 19, 36, 0.85);
+}
+.checkbox-item span { color: var(--text); }
+.checkbox-item input { accent-color: var(--accent); }
+.form label { font-weight: 600; margin-bottom: 6px; }
+.form .errorlist { margin: 8px 0 0; padding-left: 18px; color: #fecaca; }

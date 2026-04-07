@@ -1,0 +1,32 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       qemu-utils \
+       openssh-client \
+       ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt pyproject.toml README.md /app/
+COPY vmware_to_proxmox /app/vmware_to_proxmox
+COPY webui /app/webui
+COPY templates /app/templates
+COPY static /app/static
+COPY manage.py /app/manage.py
+COPY config.example.yaml /app/config.example.yaml
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir .
+
+RUN mkdir -p /app/data /app/staticfiles \
+    && python manage.py collectstatic --noinput
+
+EXPOSE 8000
+
+CMD ["gunicorn", "webui.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2"]

@@ -1,0 +1,48 @@
+vmware:
+  host: esxi.example.local
+  username: root
+  password: "CHANGE_ME"
+  port: 443
+  datacenter: ""
+  allow_insecure_ssl: true
+
+proxmox:
+  node: proxmox-node-1
+  default_storage: local-lvm
+  default_bridge: vmbr0
+  bridge_map:
+    "VM Network": vmbr0
+    "DMZ": vmbr1
+  format: qcow2
+  boot_firmware: auto
+  scsi_controller: virtio-scsi-single
+  create_efi_disk: true
+  preserve_mac: true
+  ssh_enabled: true
+  ssh_host: proxmox-node-1.example.local
+  ssh_port: 22
+  ssh_username: root
+  ssh_private_key: ""
+  ssh_password: ""
+
+migration:
+  dry_run: true
+  batch: false
+  allow_snapshots: false
+  parallel_jobs: 1
+  retry_attempts: 2
+  cleanup_source: false
+  guest_remediation: true
+  guest_rewrite_fstab: true
+  guest_install_qemu_agent: true
+
+ssh:
+  enabled: false
+  host: ""
+  port: 22
+  username: root
+  private_key: ""
+  password: ""
+
+ui:
+  stage_root: /opt/vmware-to-proxmox/staging
