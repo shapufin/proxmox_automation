@@ -81,8 +81,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY --chown=appuser:appuser . .
 
-# Create necessary directories
-RUN mkdir -p /app/data /app/configs /app/static /app/media /app/logs && \
+# Create necessary directories with proper permissions
+RUN mkdir -p /app/data /app/configs /app/staticfiles /app/media /app/logs && \
     chown -R appuser:appuser /app
 
 # Copy entrypoint script

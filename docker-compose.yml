@@ -28,7 +28,12 @@ services:
     image: redis:7-alpine
     container_name: vmware-to-proxmox-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis-password-change-me}
+    command: >
+      sh -c "
+        echo 'vm.overcommit_memory = 1' > /etc/sysctl.conf &&
+        sysctl -w vm.overcommit_memory=1 &&
+        redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis-password-change-me}
+      "
     volumes:
       - redis_data:/data
     networks:
