@@ -25,6 +25,14 @@ from .services import (
 )
 
 
+def _empty_inventory() -> dict[str, list[object]]:
+    return {
+        "vmware_vms": [],
+        "proxmox_storages": [],
+        "proxmox_bridges": [],
+    }
+
+
 def _job_form(directory: str = "", vm_choices: list[tuple[str, str]] | None = None) -> MigrationJobForm:
     form = MigrationJobForm(initial={"directory": directory})
     stage_view = list_stage_entries(directory)
@@ -62,8 +70,12 @@ def _render_dashboard(
 def dashboard(request: HttpRequest) -> HttpResponse:
     directory = request.GET.get("directory", "")
     profile_name = request.GET.get("profile", "")
-    engine = get_engine()
-    inventory = engine.inventory()
+    inventory = _empty_inventory()
+    try:
+        engine = get_engine()
+        inventory = engine.inventory()
+    except Exception as exc:  # noqa: BLE001
+        messages.warning(request, f"Inventory is unavailable right now: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     return _render_dashboard(request, _job_form(directory, vm_choices), inventory, _config_form(profile_name))
 
@@ -91,7 +103,11 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return redirect("dashboard:index")
 
-    inventory = get_engine().inventory()
+    inventory = _empty_inventory()
+    try:
+        inventory = get_engine().inventory()
+    except Exception as exc:  # noqa: BLE001
+        messages.warning(request, f"Inventory is unavailable right now: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     form = MigrationJobForm(request.POST)
     directory = request.POST.get("directory", "")
