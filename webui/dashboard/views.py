@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from django.contrib import messages
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_GET, require_POST
 
 from vmware_to_proxmox.models import DiskFormat
 
@@ -226,3 +228,52 @@ def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:
         job.save(update_fields=["status", "error", "finished_at", "updated_at"])
         messages.error(request, f"Job {job.id} failed: {exc}")
     return redirect("dashboard:job_detail", job_id=job.id)
+
+
+@require_GET
+def proxmox_status(request: HttpRequest) -> JsonResponse:
+    """Live Proxmox connectivity check — returns storages, bridges, and any error."""
+    try:
+        engine = get_engine()
+        storages = engine.proxmox.list_storages()
+        bridges = engine.proxmox.list_bridges()
+        return JsonResponse({
+            "ok": True,
+            "storages": [
+                {
+                    "storage": s.storage,
+                    "content": s.content,
+                    "type": s.storage_type,
+                    "active": s.active,
+                    "available_gb": round(s.available / (1024 ** 3), 1) if s.available else 0,
+                }
+                for s in storages
+            ],
+            "bridges": [
+                {
+                    "name": b.name,
+                    "active": b.active,
+                    "vlan_aware": b.vlan_aware,
+                    "ports": b.bridge_ports,
+                }
+                for b in bridges
+            ],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)
+
+
+@require_GET
+def browse_directory(request: HttpRequest) -> JsonResponse:
+    """Return folder/file listing for an arbitrary path — used by the directory picker."""
+    raw = request.GET.get("path", "")
+    try:
+        stage_view = list_stage_entries(raw)
+        return JsonResponse({
+            "ok": True,
+            "path": str(stage_view["directory"]),
+            "folders": [str(p) for p in stage_view["folders"]],
+            "files": [{"path": str(p), "name": p.name} for p in stage_view["files"]],
+        })
+    except Exception as exc:  # noqa: BLE001
+        return JsonResponse({"ok": False, "error": str(exc)}, status=200)

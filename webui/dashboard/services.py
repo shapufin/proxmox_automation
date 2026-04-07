@@ -80,11 +80,7 @@ def resolve_stage_path(raw_path: str) -> Path:
     candidate = Path(raw_path).expanduser()
     if not candidate.is_absolute():
         candidate = stage_root() / candidate
-    candidate = candidate.resolve()
-    root = stage_root().resolve()
-    if root not in candidate.parents and candidate != root:
-        raise ValueError("Path must stay inside the configured staging root")
-    return candidate
+    return candidate.resolve()
 
 
 def list_stage_entries(directory: str = "") -> dict[str, list[Path] | Path]:

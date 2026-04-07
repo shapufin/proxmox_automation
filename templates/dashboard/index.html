@@ -13,19 +13,34 @@
   </div>
   <div class="status-card">
     <div class="label">Proxmox Storages</div>
-    <div class="value {% if inventory.proxmox_storages %}ok{% else %}off{% endif %}">
-      {{ inventory.proxmox_storages|length }} found
+    <div class="value" id="sc-storages">
+      {% if inventory.proxmox_storages %}<span class="ok">{{ inventory.proxmox_storages|length }} found</span>{% else %}<span class="off">0 found</span>{% endif %}
     </div>
   </div>
   <div class="status-card">
     <div class="label">Proxmox Bridges</div>
-    <div class="value {% if inventory.proxmox_bridges %}ok{% else %}off{% endif %}">
-      {{ inventory.proxmox_bridges|length }} found
+    <div class="value" id="sc-bridges">
+      {% if inventory.proxmox_bridges %}<span class="ok">{{ inventory.proxmox_bridges|length }} found</span>{% else %}<span class="off">0 found</span>{% endif %}
     </div>
   </div>
   <div class="status-card">
     <div class="label">Jobs Run</div>
     <div class="value">{{ jobs|length }}</div>
+  </div>
+</div>
+
+{# ── PROXMOX CONNECTION TEST PANEL ── #}
+<div class="panel gap-top" id="proxmoxTestPanel">
+  <div class="section-header" style="margin-bottom:14px">
+    <div class="panel-title" style="border:none;margin:0;padding:0">
+      <span class="icon">🔌</span> Proxmox Connection &amp; Inventory
+    </div>
+    <button class="btn btn-primary btn-sm" id="btnRefreshProxmox" onclick="refreshProxmox()">
+      ⟳ Test &amp; Refresh
+    </button>
+  </div>
+  <div id="proxmoxResult">
+    <p class="hint">Click <strong>Test &amp; Refresh</strong> to query your Proxmox host live for datastores and networks.</p>
   </div>
 </div>
 
@@ -92,7 +107,7 @@
 
     <form method="post" action="/launch/" class="wizard" id="migrationForm">
       {% csrf_token %}
-      {{ form.directory.as_hidden }}
+      <input type="hidden" name="directory" id="dirHidden" value="{{ form.directory.value|default:'' }}" />
 
       {# STEP 1 — NAME & MODE #}
       <div class="step">
@@ -153,12 +168,16 @@
           {# Local disk staging #}
           <div class="field">
             <label>Staging directory <span style="color:var(--muted);font-weight:400">(local disk mode)</span></label>
-            <form method="get" action="/" style="display:flex;gap:8px;align-items:center">
-              <input type="text" name="directory" value="{{ form.directory.value|default:'' }}"
-                     placeholder="/data/staging/vm-01" style="flex:1;background:#0b1324;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:0.92rem" />
-              <button type="submit" class="btn btn-secondary btn-sm">📂 Load Files</button>
-            </form>
-            <span class="help">Type the path to the folder where you copied the VMDK files, then click Load Files.</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" id="dirInput" value="{{ form.directory.value|default:'' }}"
+                     placeholder="/data/staging/vm-01"
+                     style="flex:1;background:#0b1324;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 13px;font-size:0.92rem"
+                     oninput="document.getElementById('dirHidden').value=this.value" />
+              <button type="button" class="btn btn-secondary btn-sm" onclick="browseDir()">📂 Browse</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="loadFiles()">⟳ Load Files</button>
+            </div>
+            <span class="help">Type any path on the Proxmox host where you copied the VMDK files, or click Browse to navigate folders.</span>
+            <div id="dirBrowser" style="display:none;margin-top:10px"></div>
           </div>
 
           <div class="field">
@@ -302,5 +321,125 @@
     </tbody>
   </table>
 </div>
+
+<script>
+/* ── Proxmox live test ── */
+async function refreshProxmox() {
+  const btn = document.getElementById('btnRefreshProxmox');
+  const result = document.getElementById('proxmoxResult');
+  btn.disabled = true;
+  btn.textContent = '⟳ Querying…';
+  result.innerHTML = '<p class="hint">Connecting to Proxmox, please wait…</p>';
+  try {
+    const r = await fetch('/api/proxmox-status/');
+    const data = await r.json();
+    if (!data.ok) {
+      result.innerHTML = `<div class="message error">${escHtml(data.error)}</div>`;
+      document.getElementById('sc-storages').innerHTML = '<span class="off">Error</span>';
+      document.getElementById('sc-bridges').innerHTML  = '<span class="off">Error</span>';
+    } else {
+      document.getElementById('sc-storages').innerHTML = `<span class="ok">${data.storages.length} found</span>`;
+      document.getElementById('sc-bridges').innerHTML  = `<span class="ok">${data.bridges.length} found</span>`;
+      updateDropdowns(data.storages, data.bridges);
+      result.innerHTML = renderInventoryTables(data);
+    }
+  } catch(e) {
+    result.innerHTML = `<div class="message error">Request failed: ${escHtml(e.message)}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = '⟳ Test & Refresh';
+}
+
+function renderInventoryTables(data) {
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:4px">';
+  html += '<div><h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:8px">💾 Storages</h3>';
+  html += '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Content</th><th>Free</th><th>Active</th></tr></thead><tbody>';
+  if (!data.storages.length) html += '<tr class="no-data"><td colspan="5">No storages found</td></tr>';
+  for (const s of data.storages) {
+    const dot = s.active ? '🟢' : '🔴';
+    html += `<tr><td><strong>${escHtml(s.storage)}</strong></td><td style="color:var(--muted)">${escHtml(s.type)}</td><td style="color:var(--muted);font-size:0.8rem">${escHtml(s.content)}</td><td>${s.available_gb} GB</td><td>${dot}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  html += '<div><h3 style="font-size:0.8rem;text-transform:uppercase;color:var(--muted);margin-bottom:8px">🌐 Bridges / Networks</h3>';
+  html += '<table class="table"><thead><tr><th>Name</th><th>Ports</th><th>VLAN</th></tr></thead><tbody>';
+  if (!data.bridges.length) html += '<tr class="no-data"><td colspan="3">No bridges found</td></tr>';
+  for (const b of data.bridges) {
+    const vlan = b.vlan_aware ? '<span class="badge badge-info">VLAN</span>' : '';
+    html += `<tr><td><strong>${escHtml(b.name)}</strong></td><td style="color:var(--muted);font-size:0.82rem">${escHtml(b.ports||'')}</td><td>${vlan}</td></tr>`;
+  }
+  html += '</tbody></table></div></div>';
+  return html;
+}
+
+function updateDropdowns(storages, bridges) {
+  const storSel = document.getElementById('id_storage');
+  const brgSel  = document.getElementById('id_bridge');
+  if (storSel) {
+    const prev = storSel.value;
+    storSel.innerHTML = '<option value="">Auto-select storage</option>';
+    for (const s of storages) {
+      const label = s.content ? `${s.storage} (${s.content})` : s.storage;
+      storSel.innerHTML += `<option value="${escAttr(s.storage)}" ${s.storage===prev?'selected':''}>${escHtml(label)}</option>`;
+    }
+  }
+  if (brgSel) {
+    const prev = brgSel.value;
+    brgSel.innerHTML = '<option value="">Auto-select bridge</option>';
+    for (const b of bridges) {
+      const label = b.vlan_aware ? `${b.name} (VLAN aware)` : b.name;
+      brgSel.innerHTML += `<option value="${escAttr(b.name)}" ${b.name===prev?'selected':''}>${escHtml(label)}</option>`;
+    }
+  }
+}
+
+/* ── Directory browser ── */
+async function browseDir() {
+  const path = document.getElementById('dirInput').value || '/';
+  await loadDirListing(path);
+}
+
+function loadFiles() {
+  const path = document.getElementById('dirInput').value;
+  if (path) window.location.href = '/?directory=' + encodeURIComponent(path);
+}
+
+async function loadDirListing(path) {
+  const box = document.getElementById('dirBrowser');
+  box.style.display = 'block';
+  box.innerHTML = '<p class="hint">Loading…</p>';
+  try {
+    const r = await fetch('/api/browse-directory/?path=' + encodeURIComponent(path));
+    const data = await r.json();
+    if (!data.ok) { box.innerHTML = `<div class="message error">${escHtml(data.error)}</div>`; return; }
+    document.getElementById('dirInput').value  = data.path;
+    document.getElementById('dirHidden').value = data.path;
+    const parentPath = data.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
+    let html = `<div style="font-size:0.8rem;color:var(--muted);margin-bottom:8px;font-family:monospace">📁 ${escHtml(data.path)}</div>`;
+    html += '<div class="file-list" style="max-height:200px">';
+    if (data.path !== parentPath) {
+      html += `<div class="file-item" onclick="loadDirListing(${JSON.stringify(parentPath)})"><span>⬆ ..</span></div>`;
+    }
+    for (const f of data.folders) {
+      const name = f.replace(/.*[\/\\]/, '');
+      html += `<div class="file-item" onclick="loadDirListing(${JSON.stringify(f)})"><span>📁 ${escHtml(name)}</span></div>`;
+    }
+    for (const f of data.files) {
+      html += `<div class="file-item"><span>📄 ${escHtml(f.name)}</span></div>`;
+    }
+    if (!data.folders.length && !data.files.length) html += '<p class="file-empty">Empty directory</p>';
+    html += '</div>';
+    html += `<div class="btn-row" style="margin-top:10px">
+      <button type="button" class="btn btn-primary btn-sm" onclick="loadFiles()">✓ Use This Directory</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('dirBrowser').style.display='none'">✕ Close</button>
+    </div>`;
+    box.innerHTML = html;
+  } catch(e) {
+    box.innerHTML = `<div class="message error">Browse failed: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function escHtml(s)  { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s)  { return escHtml(s).replace(/"/g,'&quot;'); }
+</script>
 
 {% endblock %}
