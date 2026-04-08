@@ -54,7 +54,7 @@ services:
       - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
       - DJANGO_DB_PORT=5432
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
-      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,10.10.10.10}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
     depends_on:
       postgres:
@@ -92,7 +92,7 @@ services:
       - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
       - DJANGO_DB_PORT=5432
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
-      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,10.10.10.10}
       - DJANGO_DEBUG=false
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}
@@ -143,7 +143,7 @@ services:
       - DJANGO_DB_PASSWORD=${POSTGRES_PASSWORD:-secure-password-change-me}
       - DJANGO_DB_PORT=5432
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
-      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,10.10.10.10}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-1}
     depends_on:
@@ -156,11 +156,7 @@ services:
       - ./configs:/app/configs
       - ./staging:/data/staging
       - logs_volume:/app/logs
-    command: >
-      python manage.py worker 
-      --concurrency ${WORKER_CONCURRENCY:-1}
-      --loglevel=info
-      --max-tasks-per-child=1000
+    command: python manage.py worker
     healthcheck:
       test: ["CMD", "pgrep", "-f", "worker"]
       interval: 30s
