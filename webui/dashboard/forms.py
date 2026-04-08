@@ -62,6 +62,11 @@ class MigrationJobForm(forms.Form):
     start_after_import = forms.BooleanField(required=False, initial=True)
     source_paths = forms.MultipleChoiceField(choices=(), required=False, widget=forms.CheckboxSelectMultiple)
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Allow any non-empty path value (host-absolute paths from wizard are valid)
+        self.fields["source_paths"].valid_value = lambda val: bool(val)
+
     def set_source_choices(self, choices: list[tuple[str, str]]) -> None:
         self.fields["source_paths"].choices = choices
 

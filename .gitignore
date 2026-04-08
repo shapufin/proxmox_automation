@@ -1,0 +1,27 @@
+# Runtime data — never commit
+data/postgres/
+data/*.db
+data/*.sqlite3
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Django
+staticfiles/
+media/
+
+# Logs
+logs/
+*.log

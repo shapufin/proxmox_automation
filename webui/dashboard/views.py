@@ -164,9 +164,25 @@ def launch_job(request: HttpRequest) -> HttpResponse:
 
     inventory = _empty_inventory()
     try:
-        inventory = get_engine().inventory()
+        engine = get_engine()
+        try:
+            inventory["proxmox_storages"] = [
+                {"storage": s.storage, "content": s.content, "type": s.storage_type, "active": s.active}
+                for s in engine.proxmox.list_storages()
+            ]
+            inventory["proxmox_bridges"] = [
+                {"name": b.name, "active": b.active, "vlan_aware": b.vlan_aware}
+                for b in engine.proxmox.list_bridges()
+            ]
+        except Exception as pve_exc:  # noqa: BLE001
+            messages.warning(request, f"Proxmox inventory unavailable: {pve_exc}")
+        try:
+            with engine.vmware:
+                inventory["vmware_vms"] = engine.vmware.list_vms()
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
-        messages.warning(request, f"Inventory is unavailable right now: {exc}")
+        messages.warning(request, f"Configuration error: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     form = MigrationJobForm(request.POST)
     directory = request.POST.get("directory", "")
