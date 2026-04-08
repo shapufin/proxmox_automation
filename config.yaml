@@ -1,0 +1,66 @@
+vmware:
+  host: esxi.example.local
+  username: root
+  password: "CHANGE_ME"
+  port: 443
+  datacenter: ""
+  allow_insecure_ssl: true
+
+proxmox:
+  node: proxmox-node-1
+  default_storage: local-lvm
+  default_bridge: vmbr0
+  bridge_map:
+    "VM Network": vmbr0
+    "DMZ": vmbr1
+  datastore_map:
+    "datastore1": local-lvm
+    "SSD-datastore": nvme-pool
+  format: qcow2
+  boot_firmware: auto
+  scsi_controller: virtio-scsi-single
+  create_efi_disk: true
+  preserve_mac: true
+
+  # ── Proxmox REST API (port 8006) ─────────────────────────────────────────
+  # Used for read-only inventory queries (storages, bridges, next VMID).
+  # Required when running inside an LXC because pvesm/pvesh are not in the LXC.
+  # api_host defaults to ssh_host if left blank.
+  api_host: 10.10.10.1          # IP or hostname of the Proxmox host (not the LXC)
+  api_user: root@pam
+  # Option A — API token (recommended, no password in config):
+  #   Create with: pveum user token add root@pam migration --privsep=0
+  api_token_name: migration
+  api_token_value: "PASTE-TOKEN-UUID-HERE"
+  api_verify_ssl: false       # set true if you have a valid TLS cert on port 8006
+
+  # ── SSH to Proxmox host (used for all mutating CLI: qm create, importdisk)
+  # Also required when running inside an LXC.
+  ssh_enabled: true
+  ssh_host: 10.10.10.1          # same IP as api_host
+  ssh_port: 22
+  ssh_username: root
+  ssh_private_key: ""         # path to private key file, or leave blank and use ssh_password
+  ssh_password: ""            # plaintext password (use key instead for security)
+
+migration:
+  dry_run: true
+  batch: false
+  allow_snapshots: false
+  parallel_jobs: 1
+  retry_attempts: 2
+  cleanup_source: false
+  guest_remediation: true
+  guest_rewrite_fstab: true
+  guest_install_qemu_agent: true
+
+ssh:
+  enabled: false
+  host: ""
+  port: 22
+  username: root
+  private_key: ""
+  password: ""
+
+ui:
+  stage_root: /opt/vmware-to-proxmox/staging

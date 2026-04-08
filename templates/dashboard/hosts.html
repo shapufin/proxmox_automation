@@ -57,7 +57,99 @@
     <form method="post" action="{% url 'dashboard:save_proxmox_host' %}">
       {% csrf_token %}
       {% if proxmox_edit.instance.pk %}<input type="hidden" name="host_id" value="{{ proxmox_edit.instance.pk }}">{% endif %}
-      {{ proxmox_edit.as_div }}
+      
+      <div class="form-grid">
+        <div class="form-group">
+          <label>{{ proxmox_edit.label.label }}</label>
+          {{ proxmox_edit.label }}
+          {% if proxmox_edit.label.help_text %}<small>{{ proxmox_edit.label.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.node.label }}</label>
+          {{ proxmox_edit.node }}
+          {% if proxmox_edit.node.help_text %}<small>{{ proxmox_edit.node.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.api_host.label }}</label>
+          {{ proxmox_edit.api_host }}
+          {% if proxmox_edit.api_host.help_text %}<small>{{ proxmox_edit.api_host.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.api_user.label }}</label>
+          {{ proxmox_edit.api_user }}
+          {% if proxmox_edit.api_user.help_text %}<small>{{ proxmox_edit.api_user.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.api_token_name.label }}</label>
+          {{ proxmox_edit.api_token_name }}
+          {% if proxmox_edit.api_token_name.help_text %}<small>{{ proxmox_edit.api_token_name.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.api_token_value.label }}</label>
+          {{ proxmox_edit.api_token_value }}
+          {% if proxmox_edit.api_token_value.help_text %}<small>{{ proxmox_edit.api_token_value.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_enabled.label }}</label>
+          {{ proxmox_edit.ssh_enabled }}
+          {% if proxmox_edit.ssh_enabled.help_text %}<small>{{ proxmox_edit.ssh_enabled.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_host.label }}</label>
+          {{ proxmox_edit.ssh_host }}
+          {% if proxmox_edit.ssh_host.help_text %}<small>{{ proxmox_edit.ssh_host.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_port.label }}</label>
+          {{ proxmox_edit.ssh_port }}
+          {% if proxmox_edit.ssh_port.help_text %}<small>{{ proxmox_edit.ssh_port.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_username.label }}</label>
+          {{ proxmox_edit.ssh_username }}
+          {% if proxmox_edit.ssh_username.help_text %}<small>{{ proxmox_edit.ssh_username.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_password.label }}</label>
+          {{ proxmox_edit.ssh_password }}
+          {% if proxmox_edit.ssh_password.help_text %}<small>{{ proxmox_edit.ssh_password.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.ssh_private_key.label }}</label>
+          {{ proxmox_edit.ssh_private_key }}
+          {% if proxmox_edit.ssh_private_key.help_text %}<small>{{ proxmox_edit.ssh_private_key.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.default_storage.label }}</label>
+          {{ proxmox_edit.default_storage }}
+          {% if proxmox_edit.default_storage.help_text %}<small>{{ proxmox_edit.default_storage.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ proxmox_edit.default_bridge.label }}</label>
+          {{ proxmox_edit.default_bridge }}
+          {% if proxmox_edit.default_bridge.help_text %}<small>{{ proxmox_edit.default_bridge.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group full-width">
+          <label>{{ proxmox_edit.notes.label }}</label>
+          {{ proxmox_edit.notes }}
+          {% if proxmox_edit.notes.help_text %}<small>{{ proxmox_edit.notes.help_text }}</small>{% endif %}
+        </div>
+      </div>
+      
       <div class="wz-actions" style="margin-top:16px">
         <button type="submit" class="btn btn-primary">💾 Save Proxmox Host</button>
         <button type="button" class="btn btn-secondary" onclick="hideForm('proxmox-form','proxmox-list')">Cancel</button>
@@ -105,7 +197,51 @@
     <form method="post" action="{% url 'dashboard:save_vmware_host' %}">
       {% csrf_token %}
       {% if vmware_edit.instance.pk %}<input type="hidden" name="host_id" value="{{ vmware_edit.instance.pk }}">{% endif %}
-      {{ vmware_edit.as_div }}
+      
+      <div class="form-grid">
+        <div class="form-group">
+          <label>{{ vmware_edit.label.label }}</label>
+          {{ vmware_edit.label }}
+          {% if vmware_edit.label.help_text %}<small>{{ vmware_edit.label.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ vmware_edit.host.label }}</label>
+          {{ vmware_edit.host }}
+          {% if vmware_edit.host.help_text %}<small>{{ vmware_edit.host.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ vmware_edit.username.label }}</label>
+          {{ vmware_edit.username }}
+          {% if vmware_edit.username.help_text %}<small>{{ vmware_edit.username.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ vmware_edit.password.label }}</label>
+          {{ vmware_edit.password }}
+          {% if vmware_edit.password.help_text %}<small>{{ vmware_edit.password.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ vmware_edit.port.label }}</label>
+          {{ vmware_edit.port }}
+          {% if vmware_edit.port.help_text %}<small>{{ vmware_edit.port.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group">
+          <label>{{ vmware_edit.allow_insecure_ssl.label }}</label>
+          {{ vmware_edit.allow_insecure_ssl }}
+          {% if vmware_edit.allow_insecure_ssl.help_text %}<small>{{ vmware_edit.allow_insecure_ssl.help_text }}</small>{% endif %}
+        </div>
+        
+        <div class="form-group full-width">
+          <label>{{ vmware_edit.notes.label }}</label>
+          {{ vmware_edit.notes }}
+          {% if vmware_edit.notes.help_text %}<small>{{ vmware_edit.notes.help_text }}</small>{% endif %}
+        </div>
+      </div>
+      
       <div class="wz-actions" style="margin-top:16px">
         <button type="submit" class="btn btn-primary">💾 Save VMware Host</button>
         <button type="button" class="btn btn-secondary" onclick="hideForm('vmware-form','vmware-list')">Cancel</button>

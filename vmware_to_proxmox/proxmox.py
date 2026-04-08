@@ -67,6 +67,26 @@ class ProxmoxClient:
                 pass
             self._ssh_client = None
 
+    def _test_host_connectivity(self, host: str) -> bool:
+        """Test basic TCP connectivity to a host (IP or hostname)."""
+        try:
+            import socket
+            # Try to connect to port 22 (SSH) and 8006 (HTTPS API)
+            for port in [22, 8006]:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    result = sock.connect_ex((host, port))
+                    sock.close()
+                    if result == 0:
+                        log.info(f"Successfully connected to {host}:{port}")
+                        return True
+                except Exception:
+                    pass
+            return False
+        except Exception:
+            return False
+
     def _get_ssh_client(self) -> paramiko.SSHClient:
         """Return a connected paramiko SSHClient, reusing an existing one if still active."""
         if self._ssh_client is not None:
@@ -100,6 +120,10 @@ class ProxmoxClient:
         host = self.api_host or self.ssh_host or self.node
         if not host:
             return None
+        
+        # Log the exact host we're trying to connect to
+        log.info(f"Attempting to connect to Proxmox API at host: {host}")
+        
         try:
             from proxmoxer import ProxmoxAPI  # type: ignore[import-untyped]
             if self.api_token_name and self.api_token_value:
@@ -121,9 +145,22 @@ class ProxmoxClient:
                 return None
             api.version.get()  # eagerly test connectivity
             self._proxmox_api = api
+            log.info(f"Successfully connected to Proxmox API at {host}")
             return self._proxmox_api
         except Exception as exc:  # noqa: BLE001
             log.warning("Proxmox API unavailable (%s): will use SSH CLI fallback", exc)
+            # Try IP fallback if hostname resolution failed
+            if "Name or service not known" in str(exc) or "nodename nor servname" in str(exc):
+                log.warning("Hostname resolution failed, trying IP connectivity test...")
+                try:
+                    import socket
+                    # Try to resolve if it's an IP, or try basic connectivity
+                    if self._test_host_connectivity(host):
+                        log.info(f"Host {host} is reachable via IP but API/SSH connection failed")
+                    else:
+                        log.error(f"Host {host} is not reachable at all")
+                except Exception as conn_exc:
+                    log.error(f"Connectivity test failed: {conn_exc}")
             self._proxmox_api = self._API_UNAVAILABLE  # type: ignore[assignment]
             return None
 
@@ -162,8 +199,10 @@ class ProxmoxClient:
         When the API client is available we skip CLI checks for read-only operations.
         Only check locally if both SSH and API are absent."""
         if self.ssh_enabled:
+            log.info("SSH enabled - skipping local binary checks, will use remote execution")
             return
         if self._api_client() is not None:
+            log.info("API client available - skipping local binary checks")
             return
         required = ["qm", "pvesh", "pvesm", "qemu-img"]
         missing = [cmd for cmd in required if shutil.which(cmd) is None]
@@ -204,13 +243,40 @@ class ProxmoxClient:
         return storages
 
     def list_bridges(self) -> list[ProxmoxBridgeSpec]:
+        """List bridges including SDN VNets and standard bridges."""
         api = self._api_client()
         if api is not None:
             try:
-                data = api.nodes(self.node).network.get()
-                return self._parse_bridges(self._normalise_network_data(data))
+                # First try to get SDN VNets
+                bridges = []
+                try:
+                    sdn_data = api.cluster.sdn.vnets.get()
+                    log.info(f"Found {len(sdn_data)} SDN VNets")
+                    for vnet in sdn_data:
+                        if isinstance(vnet, dict):
+                            bridges.append(
+                                ProxmoxBridgeSpec(
+                                    name=str(vnet.get("vnet", "")),
+                                    active=bool(vnet.get("active", False)),
+                                    vlan_aware=False,  # VNets handle VLANs differently
+                                    bridge_ports=str(vnet.get("tag", "")),  # Store VLAN tag here
+                                    comments=f"SDN VNet - Type: {vnet.get('type', 'unknown')}",
+                                )
+                            )
+                except Exception as sdn_exc:
+                    log.debug(f"SDN VNets not available (likely not enabled): {sdn_exc}")
+                
+                # Then get standard network interfaces
+                net_data = api.nodes(self.node).network.get()
+                standard_bridges = self._parse_bridges(self._normalise_network_data(net_data))
+                bridges.extend(standard_bridges)
+                
+                log.info(f"Total bridges found: {len(bridges)} (SDN + standard)")
+                return bridges
             except Exception as exc:  # noqa: BLE001
                 log.warning("API network query failed, falling back to SSH CLI: %s", exc)
+        
+        # Fallback to SSH CLI
         proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
         raw = json.loads(proc.stdout or "[]")
         return self._parse_bridges(self._normalise_network_data(raw))

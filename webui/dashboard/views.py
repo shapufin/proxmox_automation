@@ -347,7 +347,8 @@ def browse_directory(request: HttpRequest) -> JsonResponse:
     """List HOST filesystem via SFTP when SSH is configured, otherwise local."""
     raw = request.GET.get("path", "")
     if not raw:
-        raw = "/"
+        # Default to Proxmox dump directory when browsing host
+        raw = "/var/lib/vz/dump"
     try:
         engine = get_engine()
         result = engine.proxmox.list_remote_dir(raw)

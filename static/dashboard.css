@@ -37,6 +37,68 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; color: #7ab3ff; }
 
+/* ── FORM GRID STYLING ── */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.2rem;
+  margin-bottom: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group.full-width {
+  grid-column: 1 / -1;
+}
+
+.form-group label {
+  font-weight: 500;
+  margin-bottom: 0.4rem;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 0.9rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.form-group small {
+  margin-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.form-group input[type="checkbox"],
+.form-group input[type="radio"] {
+  margin-right: 0.5rem;
+  transform: scale(1.1);
+}
+
 /* ══════════════════════════════════════
    SIDEBAR LAYOUT
 ══════════════════════════════════════ */
