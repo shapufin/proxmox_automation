@@ -31,7 +31,7 @@ proxmox:
   # Option A — API token (recommended, no password in config):
   #   Create with: pveum user token add root@pam migration --privsep=0
   api_token_name: migration
-  api_token_value: "PASTE-TOKEN-UUID-HERE"
+  api_token_value: "306412a7-6cbc-438e-b382-a22073622ff5"
   api_verify_ssl: false       # set true if you have a valid TLS cert on port 8006
 
   # ── SSH to Proxmox host (used for all mutating CLI: qm create, importdisk)
@@ -41,7 +41,7 @@ proxmox:
   ssh_port: 22
   ssh_username: root
   ssh_private_key: ""         # path to private key file, or leave blank and use ssh_password
-  ssh_password: ""            # plaintext password (use key instead for security)
+  ssh_password: "Shapufin@1994"            # plaintext password (use key instead for security)
 
 migration:
   dry_run: true

@@ -565,6 +565,16 @@ def delete_vmware_host(request: HttpRequest, host_id: int) -> HttpResponse:
 def test_proxmox_host(request: HttpRequest, host_id: int) -> HttpResponse:
     from vmware_to_proxmox.proxmox import ProxmoxClient
     host = get_object_or_404(ProxmoxHost, pk=host_id)
+    
+    # Log connection details for debugging
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Testing Proxmox host connection: {host.label}")
+    logger.info(f"  API Host: {host.api_host}")
+    logger.info(f"  SSH Host: {host.ssh_host}")
+    logger.info(f"  SSH Enabled: {host.ssh_enabled}")
+    logger.info(f"  Node: {host.node}")
+    
     client = ProxmoxClient(
         node=host.node,
         ssh_enabled=host.ssh_enabled,
@@ -579,15 +589,63 @@ def test_proxmox_host(request: HttpRequest, host_id: int) -> HttpResponse:
         api_token_value=host.api_token_value,
         api_verify_ssl=host.api_verify_ssl,
     )
+    
     try:
+        # Test prerequisites first
+        client.ensure_prerequisites()
+        
+        # Test API connection
+        api = client._api_client()
+        if api is None:
+            messages.warning(request, f"⚠ API connection failed to '{host.label}', trying SSH only...")
+        
+        # Test storage discovery
         storages = client.list_storages()
-        bridges  = client.list_bridges()
-        messages.success(
-            request,
-            f"\u2713 Connected to '{host.label}': {len(storages)} storage(s), {len(bridges)} network(s).",
-        )
+        
+        # Test bridge discovery (this will test SDN discovery too)
+        bridges = client.list_bridges()
+        
+        # Success message with details
+        success_msg = f"✅ Connected to '{host.label}': {len(storages)} storage(s), {len(bridges)} network(s)."
+        
+        # Add details about what was found
+        if api:
+            success_msg += " (API + SSH)"
+        else:
+            success_msg += " (SSH only)"
+            
+        # List some details
+        if storages:
+            storage_names = [s.storage for s in storages[:3]]
+            success_msg += f" Storages: {', '.join(storage_names)}{'...' if len(storages) > 3 else ''}"
+            
+        if bridges:
+            bridge_names = [b.name for b in bridges[:3]]
+            success_msg += f" Networks: {', '.join(bridge_names)}{'...' if len(bridges) > 3 else ''}"
+        
+        messages.success(request, success_msg)
+        
     except Exception as exc:  # noqa: BLE001
-        messages.error(request, f"\u2717 Connection to '{host.label}' failed: {exc}")
+        # Better error messages
+        error_msg = str(exc)
+        
+        # Common issues and their solutions
+        if "Name or service not known" in error_msg:
+            error_msg += " → Check DNS or use IP address instead of hostname"
+        elif "Connection refused" in error_msg:
+            error_msg += " → Check if Proxmox host is reachable and ports 22/8006 are open"
+        elif "Authentication" in error_msg or "permission" in error_msg.lower():
+            error_msg += " → Check API token and SSH credentials"
+        elif "timeout" in error_msg.lower():
+            error_msg += " → Network timeout, check firewall and connectivity"
+        elif "Missing required Proxmox host commands" in error_msg:
+            error_msg += " → Enable SSH mode or install Proxmox CLI tools"
+        
+        messages.error(request, f"❌ Connection to '{host.label}' failed: {error_msg}")
+        
+        # Log the full error for debugging
+        logger.error(f"Proxmox connection test failed for {host.label}: {exc}", exc_info=True)
+        
     return redirect("dashboard:hosts")
 
 
