@@ -1,5 +1,6 @@
 {% extends "dashboard/base.html" %}
 {% block title %}Job {{ job.id }} — VMware → Proxmox{% endblock %}
+{% block nav_jobs %}active{% endblock %}
 
 {% block content %}
 
@@ -15,16 +16,47 @@
     {% if job.status == "pending" %}
       <a class="btn btn-primary" href="/jobs/{{ job.id }}/run/">▶ Run Now</a>
     {% endif %}
-    <a class="btn btn-secondary" href="/">← Dashboard</a>
+    <a class="btn btn-secondary" href="/jobs/">← Jobs</a>
+    <a class="btn btn-secondary" href="/">⊞ Dashboard</a>
   </div>
 </div>
+
+{# ── Live progress bar (shown while pending or running) ── #}
+<div id="progress-section" style="{% if job.status == 'succeeded' or job.status == 'failed' %}display:none{% endif %}">
+  <div class="panel" style="margin-bottom:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div style="font-weight:600;font-size:0.9rem" id="progress-label">
+        {% if job.status == "running" %}⟳ Running…{% else %}… Waiting to start{% endif %}
+      </div>
+      <div style="font-size:0.8rem;color:var(--muted)" id="progress-elapsed"></div>
+    </div>
+    <div style="background:var(--panel2);border-radius:6px;height:10px;overflow:hidden;position:relative">
+      <div id="progress-bar"
+           style="height:100%;border-radius:6px;background:linear-gradient(90deg,#4f8ef7,#38bdf8);
+                  width:0%;transition:width 0.4s ease;position:relative;overflow:hidden">
+        <div style="position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.25) 50%,transparent 100%);
+                    animation:shimmer 1.4s infinite;background-size:200% 100%"></div>
+      </div>
+    </div>
+    <div style="margin-top:8px;font-size:0.78rem;color:var(--muted)" id="progress-sub">
+      Polling for updates every 2 s…
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+</style>
 
 <div class="grid two-up" style="margin-bottom:20px">
 
   {# LEFT — timeline #}
   <div class="panel">
     <div class="panel-title"><span class="icon">⏱</span> Timeline</div>
-    <div class="timeline">
+    <div class="timeline" id="timeline-box">
       <div class="tl-item">
         <div class="tl-dot ok">✓</div>
         <div class="tl-body">
@@ -33,34 +65,38 @@
         </div>
       </div>
       {% if job.started_at %}
-      <div class="tl-item">
+      <div class="tl-item" id="tl-started">
         <div class="tl-dot run">▶</div>
         <div class="tl-body">
           <div class="tl-title">Started</div>
           <div class="tl-meta">{{ job.started_at|date:"Y-m-d H:i:s" }}</div>
         </div>
       </div>
+      {% else %}
+      <div class="tl-item" id="tl-started" style="display:none">
+        <div class="tl-dot run">▶</div>
+        <div class="tl-body"><div class="tl-title">Started</div><div class="tl-meta" id="tl-started-time"></div></div>
+      </div>
       {% endif %}
-      {% if job.finished_at %}
-      <div class="tl-item">
-        <div class="tl-dot {% if job.status == 'succeeded' %}ok{% else %}err{% endif %}">
-          {% if job.status == "succeeded" %}✓{% else %}✕{% endif %}
+      <div class="tl-item" id="tl-finished" style="{% if not job.finished_at %}display:none{% endif %}">
+        <div class="tl-dot {% if job.status == 'succeeded' %}ok{% else %}err{% endif %}" id="tl-fin-dot">
+          {% if job.status == "succeeded" %}✓{% elif job.status == "failed" %}✕{% else %}⟳{% endif %}
         </div>
         <div class="tl-body">
-          <div class="tl-title">
-            {% if job.status == "succeeded" %}Succeeded{% else %}Failed{% endif %}
+          <div class="tl-title" id="tl-fin-title">
+            {% if job.status == "succeeded" %}Succeeded{% elif job.status == "failed" %}Failed{% else %}{{ job.get_status_display }}{% endif %}
           </div>
-          <div class="tl-meta">{{ job.finished_at|date:"Y-m-d H:i:s" }}</div>
+          <div class="tl-meta" id="tl-fin-time">{% if job.finished_at %}{{ job.finished_at|date:"Y-m-d H:i:s" }}{% else %}Updated {{ job.updated_at|date:"H:i:s" }}{% endif %}</div>
         </div>
       </div>
-      {% else %}
-      <div class="tl-item">
+      {% if not job.finished_at %}
+      <div class="tl-item" id="tl-inprogress">
         <div class="tl-dot {% if job.status == 'running' %}run{% else %}pend{% endif %}">
           {% if job.status == "running" %}⟳{% else %}…{% endif %}
         </div>
         <div class="tl-body">
           <div class="tl-title">{{ job.get_status_display }}</div>
-          <div class="tl-meta">Updated {{ job.updated_at|date:"H:i:s" }}</div>
+          <div class="tl-meta" id="tl-inprogress-time">Updated {{ job.updated_at|date:"H:i:s" }}</div>
         </div>
       </div>
       {% endif %}
@@ -99,27 +135,159 @@
 <div class="grid two-up">
   <div class="panel">
     <div class="panel-title"><span class="icon">📄</span> Logs</div>
-    {% if job.logs %}
-      <div class="log-box">{{ job.logs }}</div>
-    {% else %}
-      <p class="hint">No logs yet.</p>
-    {% endif %}
-    {% if job.error %}
-      <div style="margin-top:14px">
-        <div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div>
-        <div class="log-box" style="border-color:rgba(239,68,68,.3)">{{ job.error }}</div>
-      </div>
-    {% endif %}
+    <div id="live-logs">
+      {% if job.logs %}
+        <div class="log-box">{{ job.logs }}</div>
+      {% else %}
+        <p class="hint" id="no-logs-hint">No logs yet.</p>
+      {% endif %}
+    </div>
+    <div id="live-error">
+      {% if job.error %}
+        <div style="margin-top:14px">
+          <div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div>
+          <div class="log-box" style="border-color:rgba(239,68,68,.3)">{{ job.error }}</div>
+        </div>
+      {% endif %}
+    </div>
   </div>
 
   <div class="panel">
     <div class="panel-title"><span class="icon">✅</span> Result</div>
-    {% if job.result %}
-      <div class="log-box">{{ job.result|safe }}</div>
-    {% else %}
-      <p class="hint">No result data yet.</p>
-    {% endif %}
+    <div id="live-result">
+      {% if job.result %}
+        <div class="log-box">{{ job.result|safe }}</div>
+      {% else %}
+        <p class="hint">No result data yet.</p>
+      {% endif %}
+    </div>
   </div>
 </div>
+
+<script>
+(function() {
+  const JOB_ID   = {{ job.id }};
+  const TERMINAL = ['succeeded', 'failed'];
+  let   status   = '{{ job.status }}';
+  let   pollTimer = null;
+  let   startedAt = {{ job.started_at|date:"U"|default:"null" }};
+  let   elapsedTimer = null;
+  let   fakeProgress = 0;
+
+  if (TERMINAL.includes(status)) return;   // already done — no polling needed
+
+  function fmt(sec) {
+    if (sec < 60) return sec + 's';
+    return Math.floor(sec/60) + 'm ' + (sec%60) + 's';
+  }
+
+  function updateElapsed() {
+    if (!startedAt) return;
+    const elapsed = Math.floor(Date.now()/1000 - startedAt);
+    const el = document.getElementById('progress-elapsed');
+    if (el) el.textContent = fmt(elapsed) + ' elapsed';
+  }
+
+  function animateProgress() {
+    // Fake indeterminate progress: creeps toward 90% while running
+    if (fakeProgress < 88) fakeProgress += (88 - fakeProgress) * 0.04;
+    const bar = document.getElementById('progress-bar');
+    if (bar) bar.style.width = fakeProgress.toFixed(1) + '%';
+  }
+
+  function applyUpdate(d) {
+    status = d.status;
+
+    // Update label
+    const lbl = document.getElementById('progress-label');
+    if (lbl) {
+      if (d.status === 'running')   lbl.textContent = '⟳ Running…';
+      else if (d.status === 'pending') lbl.textContent = '… Waiting to start';
+    }
+
+    // Show started timeline item
+    if (d.started_at) {
+      startedAt = Math.floor(new Date(d.started_at).getTime() / 1000);
+      const el = document.getElementById('tl-started');
+      if (el) {
+        el.style.display = '';
+        const t = el.querySelector('#tl-started-time');
+        if (t) t.textContent = new Date(d.started_at).toLocaleString();
+      }
+    }
+
+    // Live logs
+    if (d.logs) {
+      const box = document.getElementById('live-logs');
+      if (box) box.innerHTML = '<div class="log-box" style="max-height:320px;overflow-y:auto">' + escHtml(d.logs) + '</div>';
+    }
+
+    // Terminal state
+    if (TERMINAL.includes(d.status)) {
+      clearInterval(pollTimer);
+      clearInterval(elapsedTimer);
+
+      // Fill bar to 100%
+      const bar = document.getElementById('progress-bar');
+      if (bar) {
+        bar.style.width = '100%';
+        bar.style.background = d.status === 'succeeded'
+          ? 'linear-gradient(90deg,#22c55e,#16a34a)'
+          : 'linear-gradient(90deg,#ef4444,#dc2626)';
+      }
+      // Hide shimmer section
+      const prog = document.getElementById('progress-section');
+      setTimeout(() => { if (prog) prog.style.display = 'none'; }, 1200);
+
+      // Update timeline finished item
+      const fin = document.getElementById('tl-finished');
+      if (fin) {
+        fin.style.display = '';
+        const dot   = document.getElementById('tl-fin-dot');
+        const title = document.getElementById('tl-fin-title');
+        const time  = document.getElementById('tl-fin-time');
+        if (dot)   { dot.className = 'tl-dot ' + (d.status === 'succeeded' ? 'ok' : 'err'); dot.textContent = d.status === 'succeeded' ? '✓' : '✕'; }
+        if (title) title.textContent = d.status === 'succeeded' ? 'Succeeded' : 'Failed';
+        if (time && d.finished_at)  time.textContent = new Date(d.finished_at).toLocaleString();
+      }
+      const inp = document.getElementById('tl-inprogress');
+      if (inp) inp.style.display = 'none';
+
+      // Show error
+      if (d.error) {
+        const errBox = document.getElementById('live-error');
+        if (errBox) errBox.innerHTML = '<div style="margin-top:14px"><div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div><div class="log-box" style="border-color:rgba(239,68,68,.3)">' + escHtml(d.error) + '</div></div>';
+      }
+
+      // Show result
+      if (d.result && Object.keys(d.result).length) {
+        const res = document.getElementById('live-result');
+        if (res) res.innerHTML = '<div class="log-box"><pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem">' + escHtml(JSON.stringify(d.result, null, 2)) + '</pre></div>';
+      }
+    }
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/api/jobs/' + JOB_ID + '/status/');
+      const d = await r.json();
+      applyUpdate(d);
+      animateProgress();
+    } catch(e) {
+      const sub = document.getElementById('progress-sub');
+      if (sub) sub.textContent = 'Poll error: ' + e.message;
+    }
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Start polling
+  pollTimer    = setInterval(poll, 2000);
+  elapsedTimer = setInterval(() => { updateElapsed(); animateProgress(); }, 500);
+  poll();  // immediate first poll
+})();
+</script>
 
 {% endblock %}

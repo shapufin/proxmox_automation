@@ -141,7 +141,7 @@ class MigrationEngine:
 
     def _vm_from_manifest(self, manifest_path: Path, vmx_specs: Optional[dict] = None, fallback_name: str = "") -> VmwareVmSpec:
         """Load VM spec from manifest_path. Falls back to a minimal spec if file is absent."""
-        if not str(manifest_path) or not manifest_path.exists():
+        if not str(manifest_path) or not manifest_path.exists() or manifest_path.is_dir():
             self.logger.warning(
                 "manifest.json not found at %s — building minimal spec%s",
                 manifest_path,

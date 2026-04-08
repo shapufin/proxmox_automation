@@ -1,0 +1,78 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Jobs — VMware → Proxmox{% endblock %}
+{% block nav_jobs %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Migration Jobs</div>
+    <div class="page-subtitle">All jobs — most recent first.</div>
+  </div>
+  <a href="/wizard/" class="btn btn-primary">⚡ New Migration</a>
+</div>
+
+<div class="panel">
+  {% if jobs %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Name</th>
+        <th>Mode</th>
+        <th>Status</th>
+        <th>Dry Run</th>
+        <th>Created</th>
+        <th>Duration</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td style="color:var(--muted)">{{ job.id }}</td>
+        <td style="font-weight:600">{{ job.name }}</td>
+        <td>
+          {% if job.mode == "vmware" %}
+            <span class="badge badge-info">VMware</span>
+          {% else %}
+            <span class="badge badge-muted">Local</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if job.status == "succeeded" %}
+            <span class="badge badge-success">✓ Succeeded</span>
+          {% elif job.status == "failed" %}
+            <span class="badge badge-error">✕ Failed</span>
+          {% elif job.status == "running" %}
+            <span class="badge badge-warning">⟳ Running</span>
+          {% else %}
+            <span class="badge badge-muted">… Pending</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if job.dry_run %}
+            <span class="badge badge-warning">Dry Run</span>
+          {% else %}
+            <span style="color:var(--muted);font-size:0.82rem">Live</span>
+          {% endif %}
+        </td>
+        <td style="color:var(--muted);font-size:0.82rem">{{ job.created_at|date:"Y-m-d H:i" }}</td>
+        <td style="color:var(--muted);font-size:0.82rem">
+          {% if job.started_at and job.finished_at %}
+            {{ job.started_at|timesince:job.finished_at }}
+          {% elif job.started_at %}
+            Running…
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td><a href="/jobs/{{ job.id }}/" class="btn btn-secondary btn-sm">View →</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="hint" style="padding:20px">No jobs yet. <a href="/wizard/">Start a migration →</a></p>
+  {% endif %}
+</div>
+{% endblock %}

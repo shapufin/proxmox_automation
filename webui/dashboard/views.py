@@ -260,9 +260,28 @@ def save_profile(request: HttpRequest) -> HttpResponse:
     )
 
 
+def job_list(request: HttpRequest) -> HttpResponse:
+    jobs = MigrationJob.objects.all()[:100]
+    return render(request, "dashboard/job_list.html", {"jobs": jobs})
+
+
 def job_detail(request: HttpRequest, job_id: int) -> HttpResponse:
     job = get_object_or_404(MigrationJob, pk=job_id)
     return render(request, "dashboard/job_detail.html", {"job": job})
+
+
+@require_GET
+def job_status_api(request: HttpRequest, job_id: int) -> JsonResponse:
+    job = get_object_or_404(MigrationJob, pk=job_id)
+    return JsonResponse({
+        "status": job.status,
+        "logs": job.logs,
+        "error": job.error,
+        "result": job.result,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    })
 
 
 def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:

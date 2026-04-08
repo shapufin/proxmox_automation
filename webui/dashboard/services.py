@@ -145,8 +145,9 @@ def execute_job(job: MigrationJob) -> MigrationJob:
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None
 
     if job.mode == MigrationMode.LOCAL:
-        manifest_path = resolve_stage_path(job.manifest_path) if job.manifest_path else Path("")
-        disk_paths = [resolve_stage_path(path) for path in job.source_paths]
+        _raw_manifest = (job.manifest_path or "").strip()
+        manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else Path("")
+        disk_paths = [resolve_stage_path(path) for path in job.source_paths if path and str(path).strip()]
         result = engine.migrate_local_disks_or_archive(
             vm_name=vm_name,
             manifest_path=manifest_path,
