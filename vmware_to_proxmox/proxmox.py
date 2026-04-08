@@ -239,27 +239,20 @@ class ProxmoxClient:
             except Exception as exc:  # noqa: BLE001
                 log.warning("API storage query failed, falling back to SSH CLI: %s", exc)
         
-        # Try different CLI command formats based on Proxmox version
+        # CLI fallback: probe formats from newest to oldest.
+        # IMPORTANT: Never use "-format=json" — Proxmox VE 7/8 parses "-format" as a
+        # boolean flag and rejects "=json" with "400 unable to parse boolean option".
         try:
-            # Newer Proxmox versions use --output-format
+            # PVE 7+ uses --output-format as a separate token
             proc = self._run(["pvesm", "status", "--output-format", "json"])
             return self._parse_storages(json.loads(proc.stdout or "[]"))
         except ProxmoxClientError as exc:
-            if "Unknown option: output-format" in str(exc):
-                log.warning("New CLI format not supported, trying legacy format")
-                # Older Proxmox versions use different syntax
-                try:
-                    proc = self._run(["pvesm", "status", "-format=json"])
-                    return self._parse_storages(json.loads(proc.stdout or "[]"))
-                except ProxmoxClientError as exc2:
-                    if "unable to parse boolean option" in str(exc2) or "Unknown option" in str(exc2):
-                        log.warning("JSON format not supported, trying plain text parsing")
-                        # Very old versions - parse plain text
-                        return self._parse_storages_text(self._run(["pvesm", "status"]))
-                    else:
-                        raise exc2
-            else:
-                raise exc
+            _exc_str = str(exc)
+            if "Unknown option" in _exc_str or "unable to parse" in _exc_str or "400" in _exc_str:
+                log.warning("pvesm --output-format not supported, falling back to plain text: %s", exc)
+                # Plain text works on all PVE versions
+                return self._parse_storages_text(self._run(["pvesm", "status"]))
+            raise
 
     @staticmethod
     def _parse_storages(data: list[dict[str, Any]]) -> list[ProxmoxStorageSpec]:
@@ -349,27 +342,19 @@ class ProxmoxClient:
             except Exception as exc:  # noqa: BLE001
                 log.warning("API network query failed, falling back to SSH CLI: %s", exc)
         
-        # Fallback to SSH CLI
+        # CLI fallback: same rule — never use "-format=json" (triggers PVE 7/8 boolean parse error).
         actual_node = self._get_actual_node_name(api) if api else self.node
         try:
-            # Try newer format first
+            # PVE 7+ --output-format as a separate token
             proc = self._run(["pvesh", "get", f"/nodes/{actual_node}/network", "--output-format", "json"])
             raw = json.loads(proc.stdout or "[]")
             return self._parse_bridges(self._normalise_network_data(raw))
         except ProxmoxClientError as exc:
-            if "Unknown option: output-format" in str(exc):
-                log.warning("New CLI format not supported for network, trying legacy format")
-                try:
-                    # Try older format with correct syntax
-                    proc = self._run(["pvesh", "get", f"/nodes/{actual_node}/network", "-format=json"])
-                    raw = json.loads(proc.stdout or "[]")
-                    return self._parse_bridges(self._normalise_network_data(raw))
-                except ProxmoxClientError:
-                    log.warning("JSON format not supported for network, trying plain text parsing")
-                    # Very old versions - use ip command as fallback
-                    return self._parse_bridges_text(self._run(["ip", "link", "show"]))
-            else:
-                raise exc
+            _exc_str = str(exc)
+            if "Unknown option" in _exc_str or "unable to parse" in _exc_str or "400" in _exc_str:
+                log.warning("pvesh --output-format not supported for network, falling back to ip link show: %s", exc)
+                return self._parse_bridges_text(self._run(["ip", "link", "show"]))
+            raise
 
     @staticmethod
     def _normalise_network_data(data: Any) -> list[dict[str, Any]]:
@@ -446,25 +431,11 @@ class ProxmoxClient:
             except Exception as exc:  # noqa: BLE001
                 log.warning("API nextid query failed, falling back to SSH CLI: %s", exc)
         
-        # Try different CLI command formats
-        try:
-            # Try newer format first
-            proc = self._run(["pvesh", "get", "/cluster/nextid", "--output-format", "text"])
-            return int((proc.stdout or "").strip())
-        except ProxmoxClientError as exc:
-            if "Unknown option: output-format" in str(exc):
-                log.warning("New CLI format not supported for nextid, trying legacy format")
-                try:
-                    # Try older format with correct syntax
-                    proc = self._run(["pvesh", "get", "/cluster/nextid", "-format=text"])
-                    return int((proc.stdout or "").strip())
-                except ProxmoxClientError:
-                    log.warning("Text format not supported for nextid, trying plain format")
-                    # Very old versions - no format flag
-                    proc = self._run(["pvesh", "get", "/cluster/nextid"])
-                    return int((proc.stdout or "").strip())
-            else:
-                raise exc
+        # pvesh get /cluster/nextid returns a plain integer on all PVE versions.
+        # Do NOT use "-format=text" — PVE 7/8 treats -format as a boolean flag
+        # and rejects the value with "400 unable to parse boolean option".
+        proc = self._run(["pvesh", "get", "/cluster/nextid"])
+        return int((proc.stdout or "").strip())
 
     def storage_by_name(self, name: str) -> ProxmoxStorageSpec:
         for storage in self.list_storages():

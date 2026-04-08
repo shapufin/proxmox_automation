@@ -39,7 +39,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # Database migration and static file collection
+  # Database migration, static files, and optional host registration
   migrate:
     build: 
       context: .
@@ -56,6 +56,23 @@ services:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-secret-key-change-me}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,10.10.10.10}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redis-password-change-me}@redis:6379/0
+      # ── Host auto-registration ────────────────────────────────────────────────
+      - AUTO_REGISTER=${AUTO_REGISTER:-false}
+      - PROXMOX_LABEL=${PROXMOX_LABEL:-Lab Proxmox}
+      - PROXMOX_NODE=${PROXMOX_NODE:-}
+      - PROXMOX_API_HOST=${PROXMOX_API_HOST:-}
+      - PROXMOX_API_USER=${PROXMOX_API_USER:-root@pam}
+      - PROXMOX_API_TOKEN_NAME=${PROXMOX_API_TOKEN_NAME:-}
+      - PROXMOX_API_TOKEN_VALUE=${PROXMOX_API_TOKEN_VALUE:-}
+      - PROXMOX_API_VERIFY_SSL=${PROXMOX_API_VERIFY_SSL:-false}
+      - PROXMOX_SSH_ENABLED=${PROXMOX_SSH_ENABLED:-true}
+      - PROXMOX_SSH_HOST=${PROXMOX_SSH_HOST:-}
+      - PROXMOX_SSH_PORT=${PROXMOX_SSH_PORT:-22}
+      - PROXMOX_SSH_USERNAME=${PROXMOX_SSH_USERNAME:-root}
+      - PROXMOX_SSH_PASSWORD=${PROXMOX_SSH_PASSWORD:-}
+      - PROXMOX_SSH_PRIVATE_KEY=${PROXMOX_SSH_PRIVATE_KEY:-}
+      - PROXMOX_DEFAULT_STORAGE=${PROXMOX_DEFAULT_STORAGE:-local-lvm}
+      - PROXMOX_DEFAULT_BRIDGE=${PROXMOX_DEFAULT_BRIDGE:-vmbr0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,7 +91,11 @@ services:
         python manage.py migrate --noinput &&
         python manage.py collectstatic --noinput --clear &&
         python manage.py createcachetable &&
-        echo 'Migration and static files completed successfully'
+        if [ \"$${AUTO_REGISTER:-false}\" = \"true\" ]; then
+          echo 'Running register_host...' &&
+          python manage.py register_host || echo 'WARNING: register_host failed, continuing.';
+        fi &&
+        echo 'Init completed successfully'
       "
 
   # Web application
