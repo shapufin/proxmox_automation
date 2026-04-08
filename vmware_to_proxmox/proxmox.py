@@ -87,6 +87,21 @@ class ProxmoxClient:
         except Exception:
             return False
 
+    def _get_actual_node_name(self, api) -> str:
+        """Get the actual node name from the Proxmox cluster in case the configured one is wrong."""
+        try:
+            # Get all nodes in the cluster
+            nodes = api.nodes.get()
+            if nodes:
+                # Use the first available node
+                actual_node = nodes[0].get('node', self.node)
+                if actual_node != self.node:
+                    log.info(f"Using actual node name '{actual_node}' instead of configured '{self.node}'")
+                return actual_node
+        except Exception as exc:
+            log.warning(f"Failed to get actual node name: {exc}")
+        return self.node
+
     def _get_ssh_client(self) -> paramiko.SSHClient:
         """Return a connected paramiko SSHClient, reusing an existing one if still active."""
         if self._ssh_client is not None:
@@ -217,7 +232,9 @@ class ProxmoxClient:
         api = self._api_client()
         if api is not None:
             try:
-                data = api.nodes(self.node).storage.get()
+                # First get the actual node name in case the configured one is wrong
+                actual_node = self._get_actual_node_name(api)
+                data = api.nodes(actual_node).storage.get()
                 return self._parse_storages(data)
             except Exception as exc:  # noqa: BLE001
                 log.warning("API storage query failed, falling back to SSH CLI: %s", exc)
@@ -230,12 +247,12 @@ class ProxmoxClient:
         except ProxmoxClientError as exc:
             if "Unknown option: output-format" in str(exc):
                 log.warning("New CLI format not supported, trying legacy format")
-                # Older Proxmox versions use -format
+                # Older Proxmox versions use different syntax
                 try:
-                    proc = self._run(["pvesm", "status", "-format", "json"])
+                    proc = self._run(["pvesm", "status", "-format=json"])
                     return self._parse_storages(json.loads(proc.stdout or "[]"))
                 except ProxmoxClientError as exc2:
-                    if "Unknown option" in str(exc2):
+                    if "unable to parse boolean option" in str(exc2) or "Unknown option" in str(exc2):
                         log.warning("JSON format not supported, trying plain text parsing")
                         # Very old versions - parse plain text
                         return self._parse_storages_text(self._run(["pvesm", "status"]))
@@ -321,8 +338,9 @@ class ProxmoxClient:
                 except Exception as sdn_exc:
                     log.debug(f"SDN VNets not available (likely not enabled): {sdn_exc}")
                 
-                # Then get standard network interfaces
-                net_data = api.nodes(self.node).network.get()
+                # Then get standard network interfaces using actual node name
+                actual_node = self._get_actual_node_name(api)
+                net_data = api.nodes(actual_node).network.get()
                 standard_bridges = self._parse_bridges(self._normalise_network_data(net_data))
                 bridges.extend(standard_bridges)
                 
@@ -332,17 +350,18 @@ class ProxmoxClient:
                 log.warning("API network query failed, falling back to SSH CLI: %s", exc)
         
         # Fallback to SSH CLI
+        actual_node = self._get_actual_node_name(api) if api else self.node
         try:
             # Try newer format first
-            proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
+            proc = self._run(["pvesh", "get", f"/nodes/{actual_node}/network", "--output-format", "json"])
             raw = json.loads(proc.stdout or "[]")
             return self._parse_bridges(self._normalise_network_data(raw))
         except ProxmoxClientError as exc:
             if "Unknown option: output-format" in str(exc):
                 log.warning("New CLI format not supported for network, trying legacy format")
                 try:
-                    # Try older format
-                    proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "-format", "json"])
+                    # Try older format with correct syntax
+                    proc = self._run(["pvesh", "get", f"/nodes/{actual_node}/network", "-format=json"])
                     raw = json.loads(proc.stdout or "[]")
                     return self._parse_bridges(self._normalise_network_data(raw))
                 except ProxmoxClientError:
@@ -436,8 +455,8 @@ class ProxmoxClient:
             if "Unknown option: output-format" in str(exc):
                 log.warning("New CLI format not supported for nextid, trying legacy format")
                 try:
-                    # Try older format
-                    proc = self._run(["pvesh", "get", "/cluster/nextid", "-format", "text"])
+                    # Try older format with correct syntax
+                    proc = self._run(["pvesh", "get", "/cluster/nextid", "-format=text"])
                     return int((proc.stdout or "").strip())
                 except ProxmoxClientError:
                     log.warning("Text format not supported for nextid, trying plain format")
