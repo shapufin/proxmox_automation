@@ -221,8 +221,28 @@ class ProxmoxClient:
                 return self._parse_storages(data)
             except Exception as exc:  # noqa: BLE001
                 log.warning("API storage query failed, falling back to SSH CLI: %s", exc)
-        proc = self._run(["pvesm", "status", "--output-format", "json"])
-        return self._parse_storages(json.loads(proc.stdout or "[]"))
+        
+        # Try different CLI command formats based on Proxmox version
+        try:
+            # Newer Proxmox versions use --output-format
+            proc = self._run(["pvesm", "status", "--output-format", "json"])
+            return self._parse_storages(json.loads(proc.stdout or "[]"))
+        except ProxmoxClientError as exc:
+            if "Unknown option: output-format" in str(exc):
+                log.warning("New CLI format not supported, trying legacy format")
+                # Older Proxmox versions use -format
+                try:
+                    proc = self._run(["pvesm", "status", "-format", "json"])
+                    return self._parse_storages(json.loads(proc.stdout or "[]"))
+                except ProxmoxClientError as exc2:
+                    if "Unknown option" in str(exc2):
+                        log.warning("JSON format not supported, trying plain text parsing")
+                        # Very old versions - parse plain text
+                        return self._parse_storages_text(self._run(["pvesm", "status"]))
+                    else:
+                        raise exc2
+            else:
+                raise exc
 
     @staticmethod
     def _parse_storages(data: list[dict[str, Any]]) -> list[ProxmoxStorageSpec]:
@@ -240,6 +260,41 @@ class ProxmoxClient:
                     active=str(row.get("status", "active")) == "active",
                 )
             )
+        return storages
+
+    @staticmethod
+    def _parse_storages_text(proc: subprocess.CompletedProcess[str]) -> list[ProxmoxStorageSpec]:
+        """Parse plain text output from pvesm status for very old Proxmox versions"""
+        storages: list[ProxmoxStorageSpec] = []
+        lines = proc.stdout.strip().split('\n')
+        
+        # Skip header line if present
+        start_line = 1 if lines and 'storage' in lines[0].lower() else 0
+        
+        for line in lines[start_line:]:
+            if not line.strip():
+                continue
+            
+            # Parse tab/space separated columns
+            parts = line.split()
+            if len(parts) >= 3:
+                storage_name = parts[0]
+                storage_type = parts[1] if len(parts) > 1 else ""
+                status = parts[2] if len(parts) > 2 else "active"
+                
+                storages.append(
+                    ProxmoxStorageSpec(
+                        storage=storage_name,
+                        content="",  # Not available in text format
+                        storage_type=storage_type,
+                        total=0,  # Not available in text format
+                        used=0,
+                        available=0,
+                        shared=False,
+                        active=status.lower() == "active",
+                    )
+                )
+        
         return storages
 
     def list_bridges(self) -> list[ProxmoxBridgeSpec]:
@@ -277,9 +332,25 @@ class ProxmoxClient:
                 log.warning("API network query failed, falling back to SSH CLI: %s", exc)
         
         # Fallback to SSH CLI
-        proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
-        raw = json.loads(proc.stdout or "[]")
-        return self._parse_bridges(self._normalise_network_data(raw))
+        try:
+            # Try newer format first
+            proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "--output-format", "json"])
+            raw = json.loads(proc.stdout or "[]")
+            return self._parse_bridges(self._normalise_network_data(raw))
+        except ProxmoxClientError as exc:
+            if "Unknown option: output-format" in str(exc):
+                log.warning("New CLI format not supported for network, trying legacy format")
+                try:
+                    # Try older format
+                    proc = self._run(["pvesh", "get", f"/nodes/{self.node}/network", "-format", "json"])
+                    raw = json.loads(proc.stdout or "[]")
+                    return self._parse_bridges(self._normalise_network_data(raw))
+                except ProxmoxClientError:
+                    log.warning("JSON format not supported for network, trying plain text parsing")
+                    # Very old versions - use ip command as fallback
+                    return self._parse_bridges_text(self._run(["ip", "link", "show"]))
+            else:
+                raise exc
 
     @staticmethod
     def _normalise_network_data(data: Any) -> list[dict[str, Any]]:
@@ -320,6 +391,34 @@ class ProxmoxClient:
             )
         return bridges
 
+    @staticmethod
+    def _parse_bridges_text(proc: subprocess.CompletedProcess[str]) -> list[ProxmoxBridgeSpec]:
+        """Parse plain text output from ip link show for very old Proxmox versions"""
+        bridges: list[ProxmoxBridgeSpec] = []
+        lines = proc.stdout.strip().split('\n')
+        
+        for line in lines:
+            if not line.strip():
+                continue
+            
+            # Look for bridge interfaces
+            if 'bridge' in line.lower() or line.strip().startswith('vmbr'):
+                parts = line.split()
+                if parts:
+                    iface = parts[1].rstrip(':') if len(parts) > 1 else parts[0]
+                    if iface.startswith('vmbr') or 'bridge' in iface.lower():
+                        bridges.append(
+                            ProxmoxBridgeSpec(
+                                name=iface,
+                                active='UP' in line.upper(),
+                                vlan_aware=False,  # Cannot determine from ip link output
+                                bridge_ports="",
+                                comments="Detected via ip link show",
+                            )
+                        )
+        
+        return bridges
+
     def next_vmid(self) -> int:
         api = self._api_client()
         if api is not None:
@@ -327,8 +426,26 @@ class ProxmoxClient:
                 return int(api.cluster.nextid.get())
             except Exception as exc:  # noqa: BLE001
                 log.warning("API nextid query failed, falling back to SSH CLI: %s", exc)
-        proc = self._run(["pvesh", "get", "/cluster/nextid", "--output-format", "text"])
-        return int((proc.stdout or "").strip())
+        
+        # Try different CLI command formats
+        try:
+            # Try newer format first
+            proc = self._run(["pvesh", "get", "/cluster/nextid", "--output-format", "text"])
+            return int((proc.stdout or "").strip())
+        except ProxmoxClientError as exc:
+            if "Unknown option: output-format" in str(exc):
+                log.warning("New CLI format not supported for nextid, trying legacy format")
+                try:
+                    # Try older format
+                    proc = self._run(["pvesh", "get", "/cluster/nextid", "-format", "text"])
+                    return int((proc.stdout or "").strip())
+                except ProxmoxClientError:
+                    log.warning("Text format not supported for nextid, trying plain format")
+                    # Very old versions - no format flag
+                    proc = self._run(["pvesh", "get", "/cluster/nextid"])
+                    return int((proc.stdout or "").strip())
+            else:
+                raise exc
 
     def storage_by_name(self, name: str) -> ProxmoxStorageSpec:
         for storage in self.list_storages():
