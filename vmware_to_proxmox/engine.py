@@ -23,6 +23,8 @@ class DiskImportRecord:
     converted_path: str
     volume_id: str
     slot: str
+    target_storage: str = ""
+    source_datastore: str = ""
 
 
 @dataclass(slots=True)
@@ -85,10 +87,61 @@ class MigrationEngine:
         storage = self.proxmox.choose_storage(preferred or self.config.proxmox.default_storage)
         return storage.storage
 
+    @staticmethod
+    def _map_lookup(mapping: Optional[dict[str, str]], *keys: object) -> Optional[str]:
+        if not mapping:
+            return None
+        for key in keys:
+            if key is None:
+                continue
+            text = str(key).strip()
+            if not text:
+                continue
+            if text in mapping and mapping[text]:
+                return str(mapping[text]).strip() or None
+        return None
+
+    def _resolve_disk_storage(
+        self,
+        disk: Optional[VmwareDiskSpec],
+        index: int,
+        storage_override: Optional[str] = None,
+        disk_storage_map: Optional[dict[str, str]] = None,
+    ) -> str:
+        datastore = getattr(disk, "datastore", "") if disk is not None else ""
+        mapped = self._map_lookup(
+            disk_storage_map,
+            getattr(disk, "path", "") if disk is not None else "",
+            getattr(disk, "file_name", "") if disk is not None else "",
+            getattr(disk, "label", "") if disk is not None else "",
+            f"disk-{index}",
+            f"scsi{index}",
+            datastore,
+        )
+        preferred = mapped or storage_override or (self.config.storage_for_datastore(datastore) if datastore else None)
+        return self._resolve_storage(preferred)
+
     def _resolve_network_bridge(self, network_name: str, bridge_override: Optional[str] = None) -> str:
         if bridge_override:
             return self._resolve_bridge(bridge_override)
         return self._resolve_bridge(self.config.bridge_for_network(network_name))
+
+    def _resolve_nic_bridge(
+        self,
+        nic: Optional[VmwareNicSpec],
+        index: int,
+        bridge_override: Optional[str] = None,
+        nic_bridge_map: Optional[dict[str, str]] = None,
+    ) -> str:
+        network_name = getattr(nic, "network_name", "") if nic is not None else ""
+        mapped = self._map_lookup(
+            nic_bridge_map,
+            getattr(nic, "label", "") if nic is not None else "",
+            network_name,
+            f"nic-{index}",
+            str(index),
+        )
+        return self._resolve_bridge(mapped or bridge_override or self.config.bridge_for_network(network_name))
 
     def inventory(self) -> dict[str, object]:
         self.proxmox.ensure_prerequisites()
@@ -122,14 +175,26 @@ class MigrationEngine:
                 network_name=str(net.get("network_name", "VM Network")),
                 adapter_type=str(net.get("adapter", "vmxnet3")),
             ))
-        # Build disk specs from vmx disk_files (filenames only, capacity unknown)
+        # Build disk specs from vmx disk metadata when available.
         disks: list[VmwareDiskSpec] = []
-        for idx, fname in enumerate(specs.get("disk_files", [])):
-            disks.append(VmwareDiskSpec(
-                label=f"Hard disk {idx + 1}",
-                file_name=fname,
-                capacity_bytes=0,  # Unknown from VMX alone; will infer later
-            ))
+        for idx, disk in enumerate(specs.get("disks", [])):
+            if isinstance(disk, dict):
+                disks.append(VmwareDiskSpec(
+                    label=str(disk.get("label", f"Hard disk {idx + 1}")),
+                    file_name=str(disk.get("file_name", disk.get("path", f"disk-{idx + 1}.vmdk"))),
+                    capacity_bytes=int(disk.get("capacity_bytes", 0) or 0),
+                    backing_type=str(disk.get("backing_type", "file")),
+                    controller_key=int(disk.get("controller", 0) or 0),
+                    unit_number=int(disk.get("unit_number", 0) or 0),
+                    thin_provisioned=bool(disk.get("thin_provisioned", False)),
+                ))
+        if not disks:
+            for idx, fname in enumerate(specs.get("disk_files", [])):
+                disks.append(VmwareDiskSpec(
+                    label=f"Hard disk {idx + 1}",
+                    file_name=fname,
+                    capacity_bytes=0,  # Unknown from VMX alone; will infer later
+                ))
         return VmwareVmSpec(
             name=name or specs.get("name", "vm"),
             moid=name or specs.get("name", "vm"),
@@ -165,7 +230,7 @@ class MigrationEngine:
         nics = [
             VmwareNicSpec(**nic) for nic in payload.get("nics", [])
         ]
-        return VmwareVmSpec(
+        vm = VmwareVmSpec(
             name=payload["name"],
             moid=str(payload.get("moid", payload["name"])),
             guest_id=str(payload.get("guest_id", "")),
@@ -181,6 +246,49 @@ class MigrationEngine:
             has_vtpm=bool(payload.get("has_vtpm", False)),
             has_pci_passthrough=bool(payload.get("has_pci_passthrough", False)),
         )
+        return self._apply_vmx_specs(vm, vmx_specs)
+
+    @staticmethod
+    def _apply_vmx_specs(vm: VmwareVmSpec, vmx_specs: Optional[dict] = None) -> VmwareVmSpec:
+        specs = vmx_specs or {}
+        if not specs:
+            return vm
+        if specs.get("name") and not vm.name:
+            vm.name = str(specs.get("name", vm.name))
+        if specs.get("memory_mb"):
+            vm.memory_mb = int(specs.get("memory_mb", vm.memory_mb) or vm.memory_mb)
+        if specs.get("cpu_count"):
+            vm.cpu_count = int(specs.get("cpu_count", vm.cpu_count) or vm.cpu_count)
+        if specs.get("guest_os"):
+            vm.guest_id = str(specs.get("guest_os", vm.guest_id) or vm.guest_id)
+        if specs.get("firmware"):
+            vm.firmware = str(specs.get("firmware", vm.firmware) or vm.firmware)
+        if specs.get("networks") and not vm.nics:
+            vm.nics = [
+                VmwareNicSpec(
+                    label=f"Network adapter {net.get('index', 0)}",
+                    mac_address=str(net.get("mac", "")),
+                    network_name=str(net.get("network_name", "VM Network")),
+                    adapter_type=str(net.get("adapter", "vmxnet3")),
+                )
+                for net in specs.get("networks", [])
+                if isinstance(net, dict)
+            ]
+        if specs.get("disks") and not vm.disks:
+            vm.disks = [
+                VmwareDiskSpec(
+                    label=str(disk.get("label", f"Hard disk {idx + 1}")),
+                    file_name=str(disk.get("file_name", disk.get("path", ""))),
+                    capacity_bytes=int(disk.get("capacity_bytes", 0) or 0),
+                    backing_type=str(disk.get("backing_type", "file")),
+                    controller_key=int(disk.get("controller", 0) or 0),
+                    unit_number=int(disk.get("unit_number", 0) or 0),
+                    thin_provisioned=bool(disk.get("thin_provisioned", False)),
+                )
+                for idx, disk in enumerate(specs.get("disks", []))
+                if isinstance(disk, dict)
+            ]
+        return vm
 
     def load_local_manifest(self, manifest_path: Optional[Path]) -> VmwareVmSpec:
         return self._vm_from_manifest(manifest_path)
@@ -367,6 +475,8 @@ class MigrationEngine:
         write_manifest: bool = True,
         vmx_specs: Optional[dict] = None,
         vmid: Optional[int] = None,
+        disk_storage_map: Optional[dict[str, str]] = None,
+        nic_bridge_map: Optional[dict[str, str]] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -479,11 +589,13 @@ class MigrationEngine:
                 self.proxmox.add_efi_disk(vmid, target_storage, target_format)
 
             for index, nic in enumerate(vm.nics):
-                bridge_name = self._resolve_network_bridge(nic.network_name, bridge)
+                bridge_name = self._resolve_nic_bridge(nic, index, bridge, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
 
+            vmx_disk_specs = list(vm.disks)
             for index, source_path in enumerate(source_paths):
+                disk_spec = vmx_disk_specs[index] if index < len(vmx_disk_specs) else None
                 source_format = detect_disk_format(source_path) or source_path.suffix.lower().lstrip(".") or "vmdk"
                 converted_path = target_dir / f"{source_path.stem}.{target_format.value}"
                 if source_format == target_format.value:
@@ -495,11 +607,12 @@ class MigrationEngine:
                     except DiskConversionError:
                         converted_path = source_path
 
-                volume_id = self.proxmox.import_disk(vmid, converted_path, target_storage, target_format)
+                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
+                volume_id = self.proxmox.import_disk(vmid, converted_path, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
                 migration_commands.append(
-                    f"qm importdisk {vmid} {converted_path} {target_storage} --format {target_format.value}"
+                    f"qm importdisk {vmid} {converted_path} {disk_target_storage} --format {target_format.value}"
                 )
                 migration_commands.append(attach_command)
                 import_records.append(
@@ -509,6 +622,8 @@ class MigrationEngine:
                         converted_path=str(converted_path),
                         volume_id=volume_id,
                         slot=slot,
+                        target_storage=disk_target_storage,
+                        source_datastore=getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
                     )
                 )
 
@@ -560,13 +675,27 @@ class MigrationEngine:
         start_after_import: bool = True,
         write_manifest: bool = True,
         vmid: Optional[int] = None,
+        disk_storage_map: Optional[dict[str, str]] = None,
+        nic_bridge_map: Optional[dict[str, str]] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
             warnings = self.vmware.validate_supported(vm)
-        return self._migrate_vmware(vm, warnings, storage, bridge, disk_format, dry_run, start_after_import, write_manifest, vmid=vmid)
+        return self._migrate_vmware(
+            vm,
+            warnings,
+            storage,
+            bridge,
+            disk_format,
+            dry_run,
+            start_after_import,
+            write_manifest,
+            vmid=vmid,
+            disk_storage_map=disk_storage_map,
+            nic_bridge_map=nic_bridge_map,
+        )
 
     def _migrate_vmware(
         self,
@@ -579,6 +708,8 @@ class MigrationEngine:
         start_after_import: bool,
         write_manifest: bool,
         vmid: Optional[int] = None,
+        disk_storage_map: Optional[dict[str, str]] = None,
+        nic_bridge_map: Optional[dict[str, str]] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
@@ -627,11 +758,12 @@ class MigrationEngine:
                 self.proxmox.add_efi_disk(vmid, target_storage, target_format)
 
             for index, nic in enumerate(vm.nics):
-                bridge_name = self._resolve_network_bridge(nic.network_name, network_bridge_override)
+                bridge_name = self._resolve_nic_bridge(nic, index, network_bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
 
             for index, disk_path in enumerate(downloaded):
+                disk_spec = vm.disks[index] if index < len(vm.disks) else None
                 source_format = detect_disk_format(disk_path) or Path(disk_path).suffix.lower().lstrip(".") or "vmdk"
                 converted_path = target_dir / f"{disk_path.stem}.{target_format.value}"
                 try:
@@ -642,11 +774,12 @@ class MigrationEngine:
                     source_for_import = disk_path
                     converted_path = disk_path
 
-                volume_id = self.proxmox.import_disk(vmid, source_for_import, target_storage, target_format)
+                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
+                volume_id = self.proxmox.import_disk(vmid, source_for_import, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
                 migration_commands.append(
-                    f"qm importdisk {vmid} {source_for_import} {target_storage} --format {target_format.value}"
+                    f"qm importdisk {vmid} {source_for_import} {disk_target_storage} --format {target_format.value}"
                 )
                 migration_commands.append(attach_command)
                 import_records.append(
@@ -656,6 +789,8 @@ class MigrationEngine:
                         converted_path=str(converted_path),
                         volume_id=volume_id,
                         slot=slot,
+                        target_storage=disk_target_storage,
+                        source_datastore=getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
                     )
                 )
 
@@ -724,6 +859,8 @@ class MigrationEngine:
         start_after_import: bool = True,
         vmx_specs: Optional[dict] = None,
         vmid: Optional[int] = None,
+        disk_storage_map: Optional[dict[str, str]] = None,
+        nic_bridge_map: Optional[dict[str, str]] = None,
     ) -> MigrationResult:
         """High-level entry point for local-disk migration with archive support.
 
@@ -781,6 +918,8 @@ class MigrationEngine:
                 start_after_import=start_after_import,
                 vmx_specs=vmx_specs,
                 vmid=vmid,
+                disk_storage_map=disk_storage_map,
+                nic_bridge_map=nic_bridge_map,
             )
         finally:
             for tmp in host_temp_dirs:

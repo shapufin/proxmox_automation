@@ -24,6 +24,25 @@ _VMX_DISK_RE = re.compile(
 )
 
 
+_VMX_DISK_KEY_RE = re.compile(r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.filename$', re.IGNORECASE)
+
+
+def _split_vmx_disk_reference(value: str) -> tuple[str, str]:
+    """Return (datastore, file_name) extracted from a VMX disk reference.
+
+    VMware commonly stores VMDK paths as:
+    - "[datastore1] folder/vm.vmdk"
+    - "folder/vm.vmdk"
+    - "vm.vmdk"
+    """
+    raw = (value or "").strip()
+    datastore = ""
+    if raw.startswith("[") and "]" in raw:
+        datastore, _, remainder = raw[1:].partition("]")
+        raw = remainder.strip()
+    return datastore.strip(), Path(raw).name
+
+
 def parse_vmx(content: str) -> dict[str, object]:
     """Parse a .vmx file (text content) and return a normalised hardware spec dict.
 
@@ -57,16 +76,28 @@ def parse_vmx(content: str) -> dict[str, object]:
     firmware = "efi" if firmware_raw in {"efi", "uefi"} else "bios"
 
     # Collect disk files in slot order (scsi0:0, scsi0:1, scsi1:0 …)
-    disk_entries: list[tuple[str, str]] = []
+    disk_entries: list[tuple[tuple[int, int], dict[str, object]]] = []
     for key, val in raw.items():
-        m = re.match(
-            r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.filename$', key, re.IGNORECASE
-        )
+        m = _VMX_DISK_KEY_RE.match(key)
         if m and val.lower().endswith(".vmdk"):
             slot_key = (int(m.group(2)), int(m.group(3)))
-            disk_entries.append((slot_key, val))  # type: ignore[arg-type]
+            datastore, file_name = _split_vmx_disk_reference(val)
+            disk_entries.append((
+                slot_key,
+                {
+                    "label": f"Hard disk {slot_key[0] + 1}",
+                    "file_name": file_name,
+                    "path": val,
+                    "datastore": datastore,
+                    "controller_type": m.group(1).lower(),
+                    "controller": slot_key[0],
+                    "unit_number": slot_key[1],
+                    "backing_type": "file",
+                    "thin_provisioned": True,
+                },
+            ))
     disk_entries.sort(key=lambda t: t[0])
-    disk_files = [Path(v).name for _, v in disk_entries]
+    disk_files = [str(item[1]["file_name"]) for item in disk_entries]
 
     # SCSI controller type
     scsi_type = raw.get("scsi0.virtualdev", raw.get("scsi0.devicetype", "lsilogic"))
@@ -88,7 +119,9 @@ def parse_vmx(content: str) -> dict[str, object]:
         "cpu_count": cpu_count,
         "guest_os": guest_os,
         "firmware": firmware,
+        "memory_gb": round(memory_mb / 1024, 2) if memory_mb else 0,
         "disk_files": disk_files,
+        "disks": [item[1] for item in disk_entries],
         "scsi_type": scsi_type,
         "networks": networks,
         "raw": raw,

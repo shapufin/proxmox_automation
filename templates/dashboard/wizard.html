@@ -253,6 +253,26 @@
         <span class="help">If left blank, Proxmox will automatically pick the next free VM ID.</span>
       </div>
 
+      <div class="field">
+        <label>Hardware overrides from VMX</label>
+        <span class="help">If the VMX is missing values, fill them here before launching the job.</span>
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px">
+          <input type="number" id="wz_hw_memory" class="form-input" min="1" placeholder="Memory MB"
+                 oninput="syncVmxHardwareOverrides()" />
+          <input type="number" id="wz_hw_cpu" class="form-input" min="1" placeholder="vCPUs"
+                 oninput="syncVmxHardwareOverrides()" />
+          <select id="wz_hw_firmware" class="form-select" onchange="syncVmxHardwareOverrides()">
+            <option value="">Firmware auto</option>
+            <option value="bios">BIOS</option>
+            <option value="efi">EFI / UEFI</option>
+          </select>
+          <input type="text" id="wz_hw_guest_os" class="form-input" placeholder="Guest OS hint"
+                 oninput="syncVmxHardwareOverrides()" />
+        </div>
+      </div>
+
+      <div class="field" id="vmx-hints" style="display:none"></div>
+
       <div class="wz-actions">
         <button class="btn btn-secondary" onclick="gotoStep(2)">← Back</button>
         <button class="btn btn-primary" onclick="validateStep3()">Next: Options →</button>
@@ -291,6 +311,7 @@
           <tr><td style="color:var(--muted);padding:4px 0">Disk format</td><td id="sum_fmt">—</td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">VMID</td><td id="sum_vmid">Next free</td></tr>
           <tr id="sum_hw_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware (VMX)</td><td id="sum_hw"></td></tr>
+          <tr id="sum_hw_override_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware overrides</td><td id="sum_hw_override"></td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Dry run</td><td id="sum_dry"><span class="badge badge-warning">Yes</span></td></tr>
         </table>
       </div>
@@ -363,9 +384,11 @@ const state = {
   vmid: '',
   dry_run: true, start_after_import: true,
   source_paths: [],        // array of host-absolute paths
+  vmx_disk_specs: [],      // parsed VMX disk rows
   disk_storage_map: {},    // {path: storageId}  per-disk override
   nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
   vmx_specs: {},           // Parsed VMX hardware specs
+  vmx_overrides: {},       // Manual hardware overrides for incomplete VMX data
   _discoveredStorages: [],
   _discoveredBridges:  [],
 };
@@ -452,6 +475,23 @@ function clearErrors() {
   ['err_name','err_vm_name','err_manifest','err_source','err_storage','err_bridge','err_proxmox_host'].forEach(id => showErr(id,''));
 }
 
+function syncVmxHardwareOverrides() {
+  state.vmx_overrides = {
+    memory_mb: readNumberValue('wz_hw_memory'),
+    cpu_count: readNumberValue('wz_hw_cpu'),
+    firmware: (document.getElementById('wz_hw_firmware') || {}).value || '',
+    guest_os: (document.getElementById('wz_hw_guest_os') || {}).value || '',
+  };
+  updateSummary();
+}
+
+function readNumberValue(id) {
+  const el = document.getElementById(id);
+  if (!el || !String(el.value).trim()) return '';
+  const n = parseInt(el.value, 10);
+  return Number.isFinite(n) ? n : '';
+}
+
 function validateStep1() {
   clearErrors();
   if (!state.name.trim()) { showErr('err_name', 'Job name is required.'); return; }
@@ -498,16 +538,26 @@ function validateStep3() {
 }
 
 function buildPerDiskRows(storages) {
-  const disks = state.source_paths;
+  const disks = state.vmx_disk_specs.length ? state.vmx_disk_specs : state.source_paths.map((path, i) => ({
+    label: `Disk ${i + 1}`,
+    file_name: path.split('/').pop(),
+    path,
+    datastore: '',
+    controller_type: 'scsi',
+    controller: i,
+    unit_number: 0,
+  }));
   if (disks.length <= 1) { document.getElementById('per-disk-storage').style.display = 'none'; return; }
   document.getElementById('per-disk-storage').style.display = '';
   const rows = document.getElementById('disk-storage-rows');
   rows.innerHTML = '';
   disks.forEach((path, i) => {
-    const name = path.split('/').pop();
+    const key = path.path || path.file_name || path.label || `disk-${i}`;
+    const name = path.file_name || key.split('/').pop();
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
-    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(path)}">💿 ${esc(name)}</span>`;
+    const meta = [path.label, path.datastore ? `datastore: ${path.datastore}` : '', path.controller_type ? `${path.controller_type}${path.controller !== undefined ? path.controller : ''}` : ''].filter(Boolean).join(' · ');
+    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(key)}">💿 ${esc(name)}${meta ? `<div style="font-size:0.76rem;color:var(--muted)">${esc(meta)}</div>` : ''}</span>`;
     const sel = document.createElement('select');
     sel.className = 'form-select';
     sel.style.flex = '1';
@@ -520,8 +570,14 @@ function buildPerDiskRows(storages) {
     const txt = document.createElement('input');
     txt.type = 'text'; txt.className = 'form-input'; txt.style.flex = '1';
     txt.placeholder = 'or type name';
-    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.disk_storage_map[path] = sel.value; } });
-    txt.addEventListener('input',  () => { state.disk_storage_map[path] = txt.value.trim() || undefined; });
+    if (state.disk_storage_map[key]) {
+      txt.value = state.disk_storage_map[key];
+    }
+    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.disk_storage_map[key] = sel.value; } });
+    txt.addEventListener('input',  () => {
+      const value = txt.value.trim();
+      if (value) state.disk_storage_map[key] = value; else delete state.disk_storage_map[key];
+    });
     row.appendChild(sel); row.appendChild(txt);
     rows.appendChild(row);
   });
@@ -536,7 +592,8 @@ function buildPerNicRows(bridges) {
   nics.forEach((nic, i) => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
-    row.innerHTML = `<span style="flex:2">NIC ${i} <span style="color:var(--muted)">(${esc(nic.network_name||'')} / ${esc(nic.adapter||'')})</span></span>`;
+    const key = nic.label || nic.network_name || `nic-${i}`;
+    row.innerHTML = `<span style="flex:2">${esc(key)} <span style="color:var(--muted)">(${esc(nic.network_name||'')} / ${esc(nic.adapter||'')})</span></span>`;
     const sel = document.createElement('select');
     sel.className = 'form-select'; sel.style.flex = '1';
     sel.innerHTML = `<option value="">(default: ${esc(state.bridge||'auto')})</option>`;
@@ -548,8 +605,14 @@ function buildPerNicRows(bridges) {
     const txt = document.createElement('input');
     txt.type = 'text'; txt.className = 'form-input'; txt.style.flex = '1';
     txt.placeholder = 'or type bridge';
-    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.nic_bridge_map[i] = sel.value; } });
-    txt.addEventListener('input',  () => { state.nic_bridge_map[i] = txt.value.trim() || undefined; });
+    if (state.nic_bridge_map[key]) {
+      txt.value = state.nic_bridge_map[key];
+    }
+    sel.addEventListener('change', () => { if (sel.value) { txt.value = sel.value; state.nic_bridge_map[key] = sel.value; } });
+    txt.addEventListener('input',  () => {
+      const value = txt.value.trim();
+      if (value) state.nic_bridge_map[key] = value; else delete state.nic_bridge_map[key];
+    });
     row.appendChild(sel); row.appendChild(txt);
     rows.appendChild(row);
   });
@@ -586,6 +649,22 @@ function updateSummary() {
   if (dryEl) dryEl.innerHTML = state.dry_run
     ? '<span class="badge badge-warning">Yes — safe simulation</span>'
     : '<span class="badge badge-error">No — REAL migration</span>';
+
+  const hwOverrideRow = document.getElementById('sum_hw_override_row');
+  const hwOverrideCell = document.getElementById('sum_hw_override');
+  if (hwOverrideRow && hwOverrideCell) {
+    const overrides = [];
+    if (state.vmx_overrides.memory_mb) overrides.push(`${state.vmx_overrides.memory_mb} MB`);
+    if (state.vmx_overrides.cpu_count) overrides.push(`${state.vmx_overrides.cpu_count} vCPU`);
+    if (state.vmx_overrides.firmware) overrides.push(state.vmx_overrides.firmware.toUpperCase());
+    if (state.vmx_overrides.guest_os) overrides.push(state.vmx_overrides.guest_os);
+    if (overrides.length) {
+      hwOverrideCell.textContent = overrides.join(' · ');
+      hwOverrideRow.style.display = '';
+    } else {
+      hwOverrideRow.style.display = 'none';
+    }
+  }
 }
 function setText(id, val) {
   const el = document.getElementById(id);
@@ -743,6 +822,9 @@ async function scanVmdks() {
 function applyVmxSpecs(specs) {
   // Store full vmx_specs in state to send to server
   state.vmx_specs = specs || {};
+  state.vmx_disk_specs = specs.disks || [];
+  state.disk_storage_map = {};
+  state.nic_bridge_map = {};
 
   // Job name — only pre-fill if blank
   if (specs.name && !state.name) {
@@ -755,7 +837,22 @@ function applyVmxSpecs(specs) {
   state._vmxFirmware  = specs.firmware   || 'bios';
   state._vmxGuestOs   = specs.guest_os   || '';
   state._vmxNetworks  = specs.networks   || [];
+  const memEl = document.getElementById('wz_hw_memory');
+  const cpuEl = document.getElementById('wz_hw_cpu');
+  const fwEl = document.getElementById('wz_hw_firmware');
+  const osEl = document.getElementById('wz_hw_guest_os');
+  if (memEl && !memEl.value && specs.memory_mb) memEl.value = specs.memory_mb;
+  if (cpuEl && !cpuEl.value && specs.cpu_count) cpuEl.value = specs.cpu_count;
+  if (fwEl && !fwEl.value && specs.firmware) fwEl.value = specs.firmware;
+  if (osEl && !osEl.value && specs.guest_os) osEl.value = specs.guest_os;
+  syncVmxHardwareOverrides();
   updateSummary();
+  if (state._discoveredStorages.length) {
+    buildPerDiskRows(state._discoveredStorages);
+  }
+  if (state._discoveredBridges.length) {
+    buildPerNicRows(state._discoveredBridges);
+  }
   // Show hardware hint banner
   const box = document.getElementById('scan-status');
   const existingHint = document.getElementById('vmx-hint');
@@ -767,7 +864,8 @@ function applyVmxSpecs(specs) {
     RAM <strong>${specs.memory_mb} MB</strong> · vCPUs <strong>${specs.cpu_count}</strong> ·
     Firmware <strong>${specs.firmware.toUpperCase()}</strong> ·
     OS <em>${esc(specs.guest_os || 'unknown')}</em>
-    ${specs.networks.length ? `· ${specs.networks.length} NIC(s): ${specs.networks.map(n=>esc(n.network_name)).join(', ')}` : ''}`;
+    ${(specs.networks || []).length ? `· ${(specs.networks || []).length} NIC(s): ${(specs.networks || []).map(n=>esc(n.network_name)).join(', ')}` : ''}
+    ${specs.disks && specs.disks.length ? `<div style="margin-top:6px;color:var(--muted);font-size:0.82rem">Disks: ${specs.disks.map(d => `${esc(d.file_name)}${d.datastore ? ` @ ${esc(d.datastore)}` : ''}`).join(', ')}</div>` : ''}`;
   box.after(hint);
 }
 
@@ -794,6 +892,13 @@ function buildVmdkCheckboxes(vmdks, archives) {
     const sizeGb = f.size ? ` <span style="color:var(--muted)">(${(f.size/1073741824).toFixed(1)} GB)</span>` : '';
     makeItem(f.path, ` ${esc(f.name)}${sizeGb}`, true);
   });
+
+  if (state.vmx_disk_specs && state.vmx_disk_specs.length) {
+    const vmxBox = document.createElement('div');
+    vmxBox.style.cssText = 'margin:10px 0 12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:var(--panel2);font-size:0.82rem;color:var(--muted)';
+    vmxBox.innerHTML = `<strong style="color:var(--text)">VMX disk inventory</strong><div style="margin-top:6px">${state.vmx_disk_specs.map(d => `${esc(d.label || 'Disk')} → ${esc(d.file_name || d.path || '')}${d.datastore ? ` <span style="color:var(--accent)">(${esc(d.datastore)})</span>` : ''}`).join('<br>')}</div>`;
+    list.prepend(vmxBox);
+  }
 
   (archives || []).forEach(a => {
     const sizeGb = a.size ? ` <span style="color:var(--muted)">(${(a.size/1073741824).toFixed(1)} GB)</span>` : '';
@@ -943,7 +1048,8 @@ function submitJob() {
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
   document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
-  document.getElementById('f_vmx_specs').value         = JSON.stringify(state.vmx_specs || {});
+  const mergedVmxSpecs = Object.assign({}, state.vmx_specs || {}, state.vmx_overrides || {});
+  document.getElementById('f_vmx_specs').value         = JSON.stringify(mergedVmxSpecs);
   document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';
   document.getElementById('f_vmware_host_id').value   = state.vmware_host_id  || '';
 
