@@ -147,9 +147,9 @@ class MigrationEngine:
             has_pci_passthrough=False,
         )
 
-    def _vm_from_manifest(self, manifest_path: Path, vmx_specs: Optional[dict] = None, fallback_name: str = "") -> VmwareVmSpec:
+    def _vm_from_manifest(self, manifest_path: Optional[Path], vmx_specs: Optional[dict] = None, fallback_name: str = "") -> VmwareVmSpec:
         """Load VM spec from manifest_path. Falls back to a minimal spec if file is absent."""
-        if not str(manifest_path) or not manifest_path.exists() or manifest_path.is_dir():
+        if manifest_path is None or not str(manifest_path) or not manifest_path.exists() or manifest_path.is_dir():
             self.logger.warning(
                 "manifest.json not found at %s — building minimal spec%s",
                 manifest_path,
@@ -182,7 +182,7 @@ class MigrationEngine:
             has_pci_passthrough=bool(payload.get("has_pci_passthrough", False)),
         )
 
-    def load_local_manifest(self, manifest_path: Path) -> VmwareVmSpec:
+    def load_local_manifest(self, manifest_path: Optional[Path]) -> VmwareVmSpec:
         return self._vm_from_manifest(manifest_path)
 
     def _plan_from_vm(self, vm: VmwareVmSpec, warnings: list[str], storage: Optional[str], bridge: Optional[str], disk_format: Optional[DiskFormat]) -> MigrationPlan:
@@ -357,7 +357,7 @@ class MigrationEngine:
     def migrate_local_disks(
         self,
         vm_name: str,
-        manifest_path: Path,
+        manifest_path: Optional[Path],
         disk_paths: Iterable[Path],
         storage: Optional[str] = None,
         bridge: Optional[str] = None,
@@ -440,8 +440,22 @@ class MigrationEngine:
 
         try:
             self.logger.info("Importing local disks for %s from %s", vm.name, ", ".join(str(p) for p in source_paths))
-            if write_manifest:
+            if write_manifest and manifest_path is not None and manifest_path.exists() and manifest_path.is_file():
                 (target_dir / f"{vm.name}.manifest.json").write_text(manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
+            elif write_manifest:
+                generated_manifest = {
+                    "vmware": asdict(vm),
+                    "target": {
+                        "storage": target_storage,
+                        "format": target_format.value,
+                        "firmware": firmware.value,
+                        "vmid": vmid,
+                    },
+                }
+                (target_dir / f"{vm.name}.manifest.json").write_text(
+                    json.dumps(generated_manifest, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
 
             self.proxmox.create_vm(
                 vmid=vmid,
@@ -681,7 +695,7 @@ class MigrationEngine:
     def migrate_local_disks_or_archive(
         self,
         vm_name: str,
-        manifest_path: Path,
+        manifest_path: Optional[Path],
         disk_paths: Iterable[str | Path],
         storage: Optional[str] = None,
         bridge: Optional[str] = None,

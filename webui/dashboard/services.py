@@ -164,7 +164,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
 
     if job.mode == MigrationMode.LOCAL:
         _raw_manifest = (job.manifest_path or "").strip()
-        manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else Path("")
+        manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else None
         disk_paths = [Path(path).expanduser() for path in job.source_paths if path and str(path).strip()]
         result = engine.migrate_local_disks_or_archive(
             vm_name=vm_name,
