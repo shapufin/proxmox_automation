@@ -617,7 +617,7 @@ class MigrationEngine:
 
             effective_nics = list(vm.nics)
             if not effective_nics:
-                fallback_bridge = network_bridge_override or self.config.proxmox.default_bridge
+                fallback_bridge = bridge or self.config.proxmox.default_bridge
                 if fallback_bridge:
                     warning = (
                         f"No NICs were discovered for {vm.name}; attaching one default virtio NIC on {fallback_bridge}"
