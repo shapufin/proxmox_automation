@@ -239,7 +239,7 @@ class MigrationEngine:
         for path in disk_paths:
             path = Path(path)
             if path.is_dir():
-                for child in sorted(path.iterdir()):
+                for child in sorted(path.rglob("*")):
                     if child.is_file():
                         collected.setdefault(child.name, child)
                 continue
@@ -281,6 +281,7 @@ class MigrationEngine:
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
+        disk_paths = list(disk_paths)
         vm = self._vm_from_manifest(manifest_path, vmx_specs=vmx_specs, fallback_name=vm_name)
         if vm_name and vm.name != vm_name:
             vm.name = vm_name
@@ -290,8 +291,26 @@ class MigrationEngine:
         firmware = self._resolve_firmware(vm)
         vmid = self.proxmox.next_vmid()
         source_paths = self._resolve_local_disk_paths(disk_paths, vm)
+        self.logger.info(
+            "Local migration path resolution for %s: %s candidate(s) -> %s resolved disk(s)",
+            vm.name,
+            len(disk_paths),
+            len(source_paths),
+        )
+        if source_paths:
+            self.logger.info("Resolved local source disks for %s: %s", vm.name, ", ".join(str(path) for path in source_paths))
+        else:
+            self.logger.warning("No local disk paths were supplied or discovered for %s", vm.name)
 
         if dry_run:
+            self.logger.info(
+                "Dry-run local migration for %s: disk_count=%s, manifest=%s, storage=%s, format=%s",
+                vm.name,
+                len(source_paths),
+                manifest_path,
+                target_storage,
+                target_format.value,
+            )
             return MigrationResult(
                 name=vm.name,
                 vmid=vmid,
@@ -305,6 +324,12 @@ class MigrationEngine:
         if not source_paths:
             raise ValueError("No local disk paths were supplied or discovered")
 
+        self.logger.info(
+            "Live local migration for %s will import %s disk(s) into storage %s",
+            vm.name,
+            len(source_paths),
+            target_storage,
+        )
         target_dir = Path(tempfile.mkdtemp(prefix=f"pve-local-{vm.name}-"))
         import_records: list[DiskImportRecord] = []
         remediation_path = target_dir / f"{vm.name}.remediation.sh"
