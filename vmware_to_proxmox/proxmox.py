@@ -38,6 +38,16 @@ def _sanitize_vm_name(name: str, fallback: str = "vm") -> str:
     return sanitized[:63]
 
 
+def _normalize_volume_id(volume_id: str) -> str:
+    """Strip shell quoting and whitespace from a Proxmox volume ID."""
+    cleaned = (volume_id or "").strip()
+    while cleaned and cleaned[0] in "'\"":
+        cleaned = cleaned[1:].strip()
+    while cleaned and cleaned[-1] in "'\"":
+        cleaned = cleaned[:-1].strip()
+    return cleaned
+
+
 class ProxmoxClient:
     def __init__(
         self,
@@ -542,17 +552,22 @@ class ProxmoxClient:
         for line in output.splitlines()[::-1]:
             lower = line.lower()
             if "successfully imported disk as" in lower or "imported disk as" in lower:
-                return line.split("as", 1)[1].strip().strip("'\"")
+                return _normalize_volume_id(line.split("as", 1)[1])
         # Fallback: grep for a volume-id pattern like "local-lvm:vm-100-disk-0"
         import re as _re
         for line in output.splitlines()[::-1]:
             m = _re.search(r"(\S+:\S+-\d+-disk-\d+)", line)
             if m:
-                return m.group(1)
+                return _normalize_volume_id(m.group(1))
         raise ProxmoxClientError(f"Could not determine imported volume from output:\n{output}")
 
-    def attach_disk(self, vmid: int, volume_id: str, slot: str = "scsi0", cache: str = "writeback") -> None:
-        self._run(["qm", "set", str(vmid), f"--{slot}", f"{volume_id},cache={cache}"])
+    def attach_disk(self, vmid: int, volume_id: str, slot: str = "scsi0", cache: str = "writeback") -> str:
+        safe_volume_id = _normalize_volume_id(volume_id)
+        if not safe_volume_id:
+            raise ProxmoxClientError("Cannot attach a disk without a valid volume ID")
+        args = ["qm", "set", str(vmid), f"--{slot}", f"{safe_volume_id},cache={cache}"]
+        self._run(args)
+        return " ".join(shlex.quote(x) for x in args)
 
     def add_network(self, vmid: int, index: int, bridge: str, macaddr: str = "", model: str = "virtio", vlan: Optional[int] = None) -> None:
         value = f"{model},bridge={bridge}"

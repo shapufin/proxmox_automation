@@ -436,6 +436,7 @@ class MigrationEngine:
         )
         target_dir = Path(tempfile.mkdtemp(prefix=f"pve-local-{vm.name}-"))
         import_records: list[DiskImportRecord] = []
+        migration_commands: list[str] = []
         remediation_path = target_dir / f"{vm.name}.remediation.sh"
 
         try:
@@ -496,7 +497,11 @@ class MigrationEngine:
 
                 volume_id = self.proxmox.import_disk(vmid, converted_path, target_storage, target_format)
                 slot = f"scsi{index}"
-                self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                migration_commands.append(
+                    f"qm importdisk {vmid} {converted_path} {target_storage} --format {target_format.value}"
+                )
+                migration_commands.append(attach_command)
                 import_records.append(
                     DiskImportRecord(
                         source=str(source_path),
@@ -533,6 +538,7 @@ class MigrationEngine:
                     "staging_dir": str(target_dir),
                     "remediation_script": str(remediation_path),
                     "path_resolution": path_diagnostics,
+                    "migration_commands": migration_commands,
                     "disks": [asdict(item) for item in import_records],
                 },
             )
@@ -594,6 +600,7 @@ class MigrationEngine:
         target_dir = Path(tempfile.mkdtemp(prefix=f"pve-migrate-{vm.name}-"))
         manifest_path = target_dir / f"{vm.name}.manifest.json"
         import_records: list[DiskImportRecord] = []
+        migration_commands: list[str] = []
         remediation_path = target_dir / f"{vm.name}.remediation.sh"
 
         try:
@@ -637,7 +644,11 @@ class MigrationEngine:
 
                 volume_id = self.proxmox.import_disk(vmid, source_for_import, target_storage, target_format)
                 slot = f"scsi{index}"
-                self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                migration_commands.append(
+                    f"qm importdisk {vmid} {source_for_import} {target_storage} --format {target_format.value}"
+                )
+                migration_commands.append(attach_command)
                 import_records.append(
                     DiskImportRecord(
                         source=str(disk_path),
@@ -685,6 +696,7 @@ class MigrationEngine:
                     "manifest": str(manifest_path),
                     "staging_dir": str(target_dir),
                     "remediation_script": str(remediation_path),
+                    "migration_commands": migration_commands,
                     "disks": [asdict(item) for item in import_records],
                 },
             )
