@@ -457,7 +457,7 @@ class MigrationEngine:
                     encoding="utf-8",
                 )
 
-            self.proxmox.create_vm(
+            proxmox_name = self.proxmox.create_vm(
                 vmid=vmid,
                 name=vm.name,
                 memory_mb=vm.memory_mb,
@@ -467,6 +467,12 @@ class MigrationEngine:
                 scsihw=self.config.proxmox.scsi_controller,
                 agent=True,
             )
+            if proxmox_name != vm.name:
+                self.logger.warning(
+                    "Proxmox adjusted VM name for %s to %s to satisfy naming rules",
+                    vm.name,
+                    proxmox_name,
+                )
 
             if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
                 self.proxmox.add_efi_disk(vmid, target_storage, target_format)
@@ -674,6 +680,8 @@ class MigrationEngine:
                 warnings=warnings,
                 details={
                     "source_mode": "vmware",
+                    "source_vm_name": vm.name,
+                    "proxmox_vm_name": proxmox_name,
                     "manifest": str(manifest_path),
                     "staging_dir": str(target_dir),
                     "remediation_script": str(remediation_path),

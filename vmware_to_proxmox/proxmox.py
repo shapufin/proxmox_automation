@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 import stat as stat_mod
 import subprocess
@@ -18,6 +19,23 @@ log = logging.getLogger(__name__)
 
 class ProxmoxClientError(RuntimeError):
     pass
+
+
+def _sanitize_vm_name(name: str, fallback: str = "vm") -> str:
+    """Return a Proxmox-safe VM name.
+
+    Proxmox rejects names that are not DNS-like. We normalize to lowercase,
+    replace unsafe characters with hyphens, collapse repeats, and trim any
+    leading/trailing punctuation. If the result would be empty, return *fallback*.
+    """
+    raw = (name or "").strip().lower()
+    sanitized = re.sub(r"[^a-z0-9.-]+", "-", raw)
+    sanitized = re.sub(r"[-.]{2,}", "-", sanitized).strip("-.")
+    if not sanitized:
+        sanitized = fallback
+    if not re.match(r"^[a-z0-9][a-z0-9.-]*[a-z0-9]$|^[a-z0-9]$", sanitized):
+        sanitized = re.sub(r"[^a-z0-9]+", "-", sanitized).strip("-") or fallback
+    return sanitized[:63]
 
 
 class ProxmoxClient:
@@ -469,13 +487,14 @@ class ProxmoxClient:
         scsihw: str = "virtio-scsi-single",
         agent: bool = True,
         onboot: bool = False,
-    ) -> None:
+    ) -> str:
+        safe_name = _sanitize_vm_name(name, fallback=f"vm-{vmid}")
         args = [
             "qm",
             "create",
             str(vmid),
             "--name",
-            name,
+            safe_name,
             "--memory",
             str(memory_mb),
             "--cores",
@@ -496,6 +515,7 @@ class ProxmoxClient:
         if agent:
             args.extend(["--agent", "enabled=1"])
         self._run(args)
+        return safe_name
 
     def set_vm_options(self, vmid: int, options: dict[str, Any]) -> None:
         args = ["qm", "set", str(vmid)]
