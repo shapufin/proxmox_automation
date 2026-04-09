@@ -233,19 +233,99 @@ class MigrationEngine:
             disks=disks,
         )
 
-    def _resolve_local_disk_paths(self, disk_paths: Iterable[Path], manifest_vm: Optional[VmwareVmSpec] = None) -> list[Path]:
+    def _collect_remote_local_disk_paths(
+        self,
+        remote_path: str,
+        diagnostics: list[str],
+        visited: Optional[set[str]] = None,
+    ) -> list[Path]:
+        visited = visited or set()
+        normalised = remote_path.rstrip("/")
+        if normalised in visited:
+            return []
+        visited.add(normalised)
+
+        try:
+            listing = self.proxmox.list_remote_dir(remote_path)
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(f"remote_list_failed path={remote_path!r} error={exc}")
+            return []
+
+        files = listing.get("files", []) if isinstance(listing, dict) else []
+        folders = listing.get("folders", []) if isinstance(listing, dict) else []
+        diagnostics.append(
+            f"remote_list_ok path={remote_path!r} files={len(files)} folders={len(folders)}"
+        )
+
+        collected: list[Path] = []
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get("name", ""))
+            remote_child = str(f.get("path") or "").strip()
+            if name.lower().endswith(".vmdk") and remote_child:
+                collected.append(Path(remote_child))
+
+        for folder in folders:
+            folder_path = ""
+            if isinstance(folder, dict):
+                folder_path = str(folder.get("path") or "").strip()
+            elif folder:
+                folder_path = str(folder).strip()
+            if folder_path:
+                collected.extend(self._collect_remote_local_disk_paths(folder_path, diagnostics, visited))
+
+        return collected
+
+    def _resolve_local_disk_paths(
+        self,
+        disk_paths: Iterable[Path],
+        manifest_vm: Optional[VmwareVmSpec] = None,
+        diagnostics: Optional[list[str]] = None,
+    ) -> list[Path]:
+        diagnostics = diagnostics if diagnostics is not None else []
         collected: dict[str, Path] = {}
         extras: list[Path] = []
-        for path in disk_paths:
-            path = Path(path)
+        unresolved: list[str] = []
+
+        for raw_path in disk_paths:
+            path = Path(raw_path)
+            diagnostics.append(
+                f"input_path path={str(path)!r} exists={path.exists()} is_dir={path.is_dir()} is_file={path.is_file()}"
+            )
+
+            if not path.exists() and not self.proxmox.ssh_enabled:
+                diagnostics.append(
+                    f"path_not_visible_locally_and_ssh_disabled path={str(path)!r}"
+                )
+
             if path.is_dir():
+                diagnostics.append(f"local_directory_detected path={str(path)!r}")
                 for child in sorted(path.rglob("*")):
                     if child.is_file():
                         collected.setdefault(child.name, child)
                 continue
+
             if path.is_file():
+                diagnostics.append(f"local_file_detected path={str(path)!r}")
                 collected.setdefault(path.name, path)
                 continue
+
+            remote_candidates = self._collect_remote_local_disk_paths(str(path), diagnostics)
+            if remote_candidates:
+                diagnostics.append(
+                    f"remote_directory_resolved path={str(path)!r} candidate_count={len(remote_candidates)}"
+                )
+                for candidate in remote_candidates:
+                    collected.setdefault(candidate.name, candidate)
+                continue
+
+            if path.suffix.lower() == ".vmdk":
+                diagnostics.append(f"treating_unresolved_file_candidate path={str(path)!r}")
+                collected.setdefault(path.name, path)
+            else:
+                unresolved.append(str(path))
+                diagnostics.append(f"unresolved_path_skipped path={str(path)!r}")
 
         if manifest_vm and manifest_vm.disks:
             ordered: list[Path] = []
@@ -259,8 +339,16 @@ class MigrationEngine:
             for name, candidate in sorted(collected.items()):
                 if name not in used:
                     extras.append(candidate)
+            if diagnostics:
+                diagnostics.append(
+                    f"manifest_disk_order_applied matched={len(ordered)} extras={len(extras)} unresolved={len(unresolved)}"
+                )
             return ordered + extras
 
+        if diagnostics:
+            diagnostics.append(
+                f"path_resolution_complete collected={len(collected)} unresolved={len(unresolved)}"
+            )
         return [candidate for _, candidate in sorted(collected.items())]
 
     def resolve_local_disk_paths(self, disk_paths: Iterable[Path], manifest_vm: Optional[VmwareVmSpec] = None) -> list[Path]:
@@ -291,17 +379,24 @@ class MigrationEngine:
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
         vmid = vmid or self.proxmox.next_vmid()
-        source_paths = self._resolve_local_disk_paths(disk_paths, vm)
+        path_diagnostics: list[str] = []
+        source_paths = self._resolve_local_disk_paths(disk_paths, vm, path_diagnostics)
         self.logger.info(
             "Local migration path resolution for %s: %s candidate(s) -> %s resolved disk(s)",
             vm.name,
             len(disk_paths),
             len(source_paths),
         )
+        for line in path_diagnostics:
+            self.logger.info("Local migration path diagnostic for %s: %s", vm.name, line)
         if source_paths:
             self.logger.info("Resolved local source disks for %s: %s", vm.name, ", ".join(str(path) for path in source_paths))
         else:
-            self.logger.warning("No local disk paths were supplied or discovered for %s", vm.name)
+            self.logger.warning(
+                "No local disk paths were supplied or discovered for %s; diagnostics=%s",
+                vm.name,
+                path_diagnostics,
+            )
 
         if dry_run:
             self.logger.info(
@@ -319,11 +414,19 @@ class MigrationEngine:
                 disk_format=target_format,
                 firmware=firmware,
                 warnings=warnings,
-                details={"dry_run": True, "source_mode": "local", "disk_count": len(source_paths)},
+                details={
+                    "dry_run": True,
+                    "source_mode": "local",
+                    "disk_count": len(source_paths),
+                    "path_resolution": path_diagnostics,
+                },
             )
 
         if not source_paths:
-            raise ValueError("No local disk paths were supplied or discovered")
+            raise ValueError(
+                "No local disk paths were supplied or discovered; "
+                f"diagnostics={path_diagnostics}"
+            )
 
         self.logger.info(
             "Live local migration for %s will import %s disk(s) into storage %s",
@@ -409,6 +512,7 @@ class MigrationEngine:
                     "manifest": str(manifest_path),
                     "staging_dir": str(target_dir),
                     "remediation_script": str(remediation_path),
+                    "path_resolution": path_diagnostics,
                     "disks": [asdict(item) for item in import_records],
                 },
             )
