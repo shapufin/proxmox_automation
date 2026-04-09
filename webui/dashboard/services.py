@@ -91,6 +91,23 @@ def list_stage_entries(directory: str = "") -> dict[str, list[Path] | Path]:
     entries = sorted(directory_path.iterdir()) if directory_path.exists() else []
     folders = [entry for entry in entries if entry.is_dir()]
     files = [entry for entry in entries if entry.is_file()]
+
+    # Recursively expose files beneath the selected directory so cloned VM
+    # layouts that nest the .vmx and .vmdk files in subfolders are discoverable.
+    def _walk_files(base: Path) -> list[Path]:
+        discovered: list[Path] = []
+        try:
+            for child in sorted(base.iterdir()):
+                if child.is_file():
+                    discovered.append(child)
+                elif child.is_dir():
+                    discovered.extend(_walk_files(child))
+        except OSError:
+            return []
+        return discovered
+
+    for folder in folders:
+        files.extend(_walk_files(folder))
     return {"directory": directory_path, "folders": folders, "files": files}
 
 

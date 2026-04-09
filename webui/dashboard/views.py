@@ -162,6 +162,12 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         return redirect("dashboard:index")
 
+    post_data = request.POST.copy()
+    if (post_data.get("mode") or "").strip() == MigrationMode.LOCAL and not post_data.getlist("source_paths"):
+        directory = (post_data.get("directory") or "").strip()
+        if directory:
+            post_data.setlist("source_paths", [directory])
+
     inventory = _empty_inventory()
     try:
         engine = get_engine()
@@ -184,8 +190,8 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     except Exception as exc:  # noqa: BLE001
         messages.warning(request, f"Configuration error: {exc}")
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
-    form = MigrationJobForm(request.POST)
-    directory = request.POST.get("directory", "")
+    form = MigrationJobForm(post_data)
+    directory = post_data.get("directory", "")
     stage_view = list_stage_entries(directory)
     form.set_source_choices(file_choice_items(stage_view["files"]))
     form.set_config_profile_choices(config_profile_choices())
@@ -420,58 +426,69 @@ def vmdk_scan(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"ok": False, "error": "path is required"}, status=200)
     try:
         engine = get_engine()
-        listing = engine.proxmox.list_remote_dir(raw)
-        all_files = listing.get("files", [])
-
         vmdks: list[dict] = []
-        manifest_path = ""
-        manifest: dict = {}
-        vmx_path = ""
-        vmx_specs: dict = {}
+        state = {
+            "manifest_path": "",
+            "manifest": {},
+            "vmx_path": "",
+            "vmx_specs": {},
+        }
         archives: list[dict] = []
 
-        for f in all_files:
-            name_lower = f["name"].lower()
+        seen_dirs: set[str] = set()
 
-            if name_lower.endswith(".vmdk"):
-                vmdks.append(f)
+        def walk_dir(path: str) -> None:
+            if path in seen_dirs:
+                return
+            seen_dirs.add(path)
+            listing = engine.proxmox.list_remote_dir(path)
+            for f in listing.get("files", []):
+                name_lower = f["name"].lower()
 
-            elif name_lower == "manifest.json":
-                manifest_path = f["path"]
-                try:
-                    content = engine.proxmox.read_remote_file(manifest_path)
-                    manifest = json.loads(content)
-                except Exception:  # noqa: BLE001
-                    manifest = {}
+                if name_lower.endswith(".vmdk"):
+                    vmdks.append(f)
 
-            elif name_lower.endswith(".vmx") and not vmx_path:
-                vmx_path = f["path"]
-                try:
-                    content = engine.proxmox.read_remote_file(vmx_path)
-                    parsed = parse_vmx(content)
-                    # Exclude the raw key-dump from the API response (too large)
-                    vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
-                except Exception:  # noqa: BLE001
-                    vmx_specs = {}
+                elif name_lower == "manifest.json" and not state["manifest_path"]:
+                    state["manifest_path"] = f["path"]
+                    try:
+                        content = engine.proxmox.read_remote_file(state["manifest_path"])
+                        state["manifest"] = json.loads(content)
+                    except Exception:  # noqa: BLE001
+                        state["manifest"] = {}
 
-            else:
-                atype = detect_archive_type(f["name"])
-                if atype:
-                    archives.append({
-                        "path": f["path"],
-                        "name": f["name"],
-                        "size": f.get("size", 0),
-                        "archive_type": atype,
-                    })
+                elif name_lower.endswith(".vmx") and not state["vmx_path"]:
+                    state["vmx_path"] = f["path"]
+                    try:
+                        content = engine.proxmox.read_remote_file(state["vmx_path"])
+                        parsed = parse_vmx(content)
+                        # Exclude the raw key-dump from the API response (too large)
+                        state["vmx_specs"] = {k: v for k, v in parsed.items() if k != "raw"}
+                    except Exception:  # noqa: BLE001
+                        state["vmx_specs"] = {}
+
+                else:
+                    atype = detect_archive_type(f["name"])
+                    if atype:
+                        archives.append({
+                            "path": f["path"],
+                            "name": f["name"],
+                            "size": f.get("size", 0),
+                            "archive_type": atype,
+                        })
+
+            for folder in listing.get("folders", []):
+                walk_dir(folder)
+
+        walk_dir(raw)
 
         return JsonResponse({
             "ok": True,
-            "path": listing["path"],
+            "path": raw,
             "vmdks": vmdks,
-            "manifest_path": manifest_path,
-            "manifest": manifest,
-            "vmx_path": vmx_path,
-            "vmx_specs": vmx_specs,
+            "manifest_path": state["manifest_path"],
+            "manifest": state["manifest"],
+            "vmx_path": state["vmx_path"],
+            "vmx_specs": state["vmx_specs"],
             "archives": archives,
         })
     except Exception as exc:  # noqa: BLE001

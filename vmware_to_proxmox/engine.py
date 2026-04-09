@@ -573,6 +573,19 @@ class MigrationEngine:
         resolved_paths: list[Path] = []
         host_temp_dirs: list[str] = []
 
+        def _collect_remote_vmdks(remote_dir: str) -> list[Path]:
+            collected: list[Path] = []
+            try:
+                listing = self.proxmox.list_remote_dir(remote_dir)
+            except Exception:
+                return collected
+            for f in listing.get("files", []):
+                if f["name"].lower().endswith(".vmdk"):
+                    collected.append(Path(f["path"]))
+            for folder in listing.get("folders", []):
+                collected.extend(_collect_remote_vmdks(folder))
+            return collected
+
         for raw_path in disk_paths:
             raw_path_str = str(raw_path)
             archive_type = detect_archive_type(raw_path_str)
@@ -585,10 +598,7 @@ class MigrationEngine:
                 )
                 self.proxmox.extract_archive(raw_path_str, dest)
                 host_temp_dirs.append(dest)
-                listing = self.proxmox.list_remote_dir(dest)
-                for f in listing.get("files", []):
-                    if f["name"].lower().endswith(".vmdk"):
-                        resolved_paths.append(Path(f["path"]))
+                resolved_paths.extend(_collect_remote_vmdks(dest))
             else:
                 resolved_paths.append(Path(raw_path_str))
 
