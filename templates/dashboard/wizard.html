@@ -336,6 +336,7 @@
   <input type="hidden" name="start_after_import" id="f_start"    value="on">
   <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
   <input type="hidden" name="nic_bridge_map"    id="f_nic_bridge_map"    value="{}">
+  <input type="hidden" name="vmx_specs"        id="f_vmx_specs"          value="{}">
   <input type="hidden" name="proxmox_host_id"  id="f_proxmox_host_id"  value="">
   <input type="hidden" name="vmware_host_id"   id="f_vmware_host_id"   value="">
   {# source_paths are added dynamically #}
@@ -354,6 +355,7 @@ const state = {
   source_paths: [],        // array of host-absolute paths
   disk_storage_map: {},    // {path: storageId}  per-disk override
   nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
+  vmx_specs: {},           // Parsed VMX hardware specs
   _discoveredStorages: [],
   _discoveredBridges:  [],
 };
@@ -728,6 +730,9 @@ async function scanVmdks() {
 }
 
 function applyVmxSpecs(specs) {
+  // Store full vmx_specs in state to send to server
+  state.vmx_specs = specs || {};
+
   // Job name — only pre-fill if blank
   if (specs.name && !state.name) {
     document.getElementById('wz_name').value = specs.name;
@@ -926,6 +931,7 @@ function submitJob() {
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
   document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
+  document.getElementById('f_vmx_specs').value         = JSON.stringify(state.vmx_specs || {});
   document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';
   document.getElementById('f_vmware_host_id').value   = state.vmware_host_id  || '';
 

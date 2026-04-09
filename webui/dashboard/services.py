@@ -157,6 +157,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
             disk_format=disk_format,
             dry_run=job.dry_run,
             start_after_import=job.start_after_import,
+            vmx_specs=job.vmx_specs if job.vmx_specs else None,
         )
     else:
         result = engine.migrate_vm(

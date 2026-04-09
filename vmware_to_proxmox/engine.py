@@ -122,6 +122,14 @@ class MigrationEngine:
                 network_name=str(net.get("network_name", "VM Network")),
                 adapter_type=str(net.get("adapter", "vmxnet3")),
             ))
+        # Build disk specs from vmx disk_files (filenames only, capacity unknown)
+        disks: list[VmwareDiskSpec] = []
+        for idx, fname in enumerate(specs.get("disk_files", [])):
+            disks.append(VmwareDiskSpec(
+                label=f"Hard disk {idx + 1}",
+                file_name=fname,
+                capacity_bytes=0,  # Unknown from VMX alone; will infer later
+            ))
         return VmwareVmSpec(
             name=name or specs.get("name", "vm"),
             moid=name or specs.get("name", "vm"),
@@ -132,7 +140,7 @@ class MigrationEngine:
             cpu_count=int(specs.get("cpu_count", 1) or 1),
             annotation="",
             datastore="",
-            disks=[],
+            disks=disks,
             nics=nics,
             has_snapshots=False,
             has_vtpm=False,

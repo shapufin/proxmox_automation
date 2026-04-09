@@ -18,6 +18,7 @@
     {% endif %}
     <a class="btn btn-secondary" href="/jobs/">← Jobs</a>
     <a class="btn btn-secondary" href="/">⊞ Dashboard</a>
+    <a class="btn btn-error" href="/jobs/{{ job.id }}/delete/" onclick="return confirm('Delete this job?')">✕ Delete</a>
   </div>
 </div>
 

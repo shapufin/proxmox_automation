@@ -1,0 +1,36 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Delete Job {{ job.id }} — VMware → Proxmox{% endblock %}
+{% block nav_jobs %}active{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Delete Job #{{ job.id }}?</div>
+    <div class="page-subtitle">{{ job.name }}</div>
+  </div>
+  <a href="/jobs/" class="btn btn-secondary">← Cancel</a>
+</div>
+
+<div class="panel" style="max-width:600px">
+  <div style="margin-bottom:20px">
+    <p>Are you sure you want to permanently delete this job?</p>
+    <ul style="margin:12px 0;padding-left:20px;color:var(--muted)">
+      <li><strong>Mode:</strong> {% if job.mode == "vmware" %}VMware Direct{% else %}Local Disks{% endif %}</li>
+      <li><strong>Status:</strong> {{ job.get_status_display }}</li>
+      <li><strong>Created:</strong> {{ job.created_at|date:"Y-m-d H:i:s" }}</li>
+      {% if job.dry_run %}
+      <li><span class="badge badge-warning">Dry Run</span></li>
+      {% endif %}
+    </ul>
+    <p style="color:var(--error);font-size:0.9rem">This action cannot be undone.</p>
+  </div>
+
+  <form method="post" action="/jobs/{{ job.id }}/delete/">
+    {% csrf_token %}
+    <div style="display:flex;gap:10px">
+      <button type="submit" class="btn btn-error">✕ Delete Job</button>
+      <a href="/jobs/{{ job.id }}/" class="btn btn-secondary">View Job</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

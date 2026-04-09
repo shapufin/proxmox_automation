@@ -213,6 +213,7 @@ def launch_job(request: HttpRequest) -> HttpResponse:
             disk_format=form.cleaned_data.get("disk_format", ""),
             disk_storage_map=_parse_json_field(form.cleaned_data.get("disk_storage_map", "")),
             nic_bridge_map=_parse_json_field(form.cleaned_data.get("nic_bridge_map", "")),
+            vmx_specs=_parse_json_field(form.cleaned_data.get("vmx_specs", "")),
             proxmox_host=ProxmoxHost.objects.filter(pk=form.cleaned_data.get("proxmox_host_id") or 0).first(),
             vmware_host=VMwareHost.objects.filter(pk=form.cleaned_data.get("vmware_host_id") or 0).first(),
             dry_run=bool(form.cleaned_data.get("dry_run", False)),
@@ -304,6 +305,17 @@ def run_pending_job(request: HttpRequest, job_id: int) -> HttpResponse:
         job.save(update_fields=["status", "error", "finished_at", "updated_at"])
         messages.error(request, f"Job {job.id} failed: {exc}")
     return redirect("dashboard:job_detail", job_id=job.id)
+
+
+def delete_job(request: HttpRequest, job_id: int) -> HttpResponse:
+    """Delete a migration job (POST only, with confirmation)."""
+    job = get_object_or_404(MigrationJob, pk=job_id)
+    if request.method == "POST":
+        job.delete()
+        messages.success(request, f"Job #{job_id} deleted.")
+        return redirect("dashboard:job_list")
+    # GET: confirmation page
+    return render(request, "dashboard/job_confirm_delete.html", {"job": job})
 
 
 @require_GET
