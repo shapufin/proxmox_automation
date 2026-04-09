@@ -143,6 +143,10 @@ class MigrationEngine:
         )
         return self._resolve_bridge(mapped or bridge_override or self.config.bridge_for_network(network_name))
 
+    def _resolve_fallback_nic_bridge(self, bridge_override: Optional[str] = None) -> str:
+        preferred = bridge_override or self.config.proxmox.default_bridge
+        return self._resolve_bridge(preferred)
+
     @staticmethod
     def _resolve_disk_resize(
         disk_key: str,
@@ -504,6 +508,8 @@ class MigrationEngine:
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
         disk_resize_map: Optional[dict[str, int]] = None,
+        allow_disk_shrink: bool = False,
+        fallback_nic_bridge: Optional[str] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -617,7 +623,7 @@ class MigrationEngine:
 
             effective_nics = list(vm.nics)
             if not effective_nics:
-                fallback_bridge = bridge or self.config.proxmox.default_bridge
+                fallback_bridge = fallback_nic_bridge or bridge or self.config.proxmox.default_bridge
                 if fallback_bridge:
                     warning = (
                         f"No NICs were discovered for {vm.name}; attaching one default virtio NIC on {fallback_bridge}"
@@ -634,7 +640,8 @@ class MigrationEngine:
                     ]
 
             for index, nic in enumerate(effective_nics):
-                bridge_name = self._resolve_nic_bridge(nic, index, bridge, nic_bridge_map)
+                bridge_override = fallback_nic_bridge if (not vm.nics and index == 0 and fallback_nic_bridge) else bridge
+                bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
 
@@ -666,9 +673,25 @@ class MigrationEngine:
                                 resize_gb,
                             )
                             resize_disk(converted_path, resize_gb)
+                        elif resize_gb < current_gb:
+                            if allow_disk_shrink:
+                                self.logger.info(
+                                    "Shrinking local disk %s from %.1f GB to %d GB",
+                                    source_path.name,
+                                    current_gb,
+                                    resize_gb,
+                                )
+                                resize_disk(converted_path, resize_gb, shrink_ok=True)
+                            else:
+                                self.logger.warning(
+                                    "Skipping local shrink for %s: target %d GB is smaller than current %.1f GB and shrink is not allowed",
+                                    source_path.name,
+                                    resize_gb,
+                                    current_gb,
+                                )
                         else:
                             self.logger.info(
-                                "Skipping local resize: target %d GB is not larger than current %.1f GB",
+                                "Skipping local resize: target %d GB matches current %.1f GB",
                                 resize_gb,
                                 current_gb,
                             )
@@ -747,6 +770,8 @@ class MigrationEngine:
         nic_bridge_map: Optional[dict[str, str]] = None,
         vmx_specs: Optional[dict] = None,
         disk_resize_map: Optional[dict[str, int]] = None,
+        allow_disk_shrink: bool = False,
+        fallback_nic_bridge: Optional[str] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -767,6 +792,8 @@ class MigrationEngine:
             disk_storage_map=disk_storage_map,
             nic_bridge_map=nic_bridge_map,
             disk_resize_map=disk_resize_map,
+            allow_disk_shrink=allow_disk_shrink,
+            fallback_nic_bridge=fallback_nic_bridge,
         )
 
     def _migrate_vmware(
@@ -783,6 +810,8 @@ class MigrationEngine:
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
         disk_resize_map: Optional[dict[str, int]] = None,
+        allow_disk_shrink: bool = False,
+        fallback_nic_bridge: Optional[str] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
@@ -832,7 +861,7 @@ class MigrationEngine:
 
             effective_nics = list(vm.nics)
             if not effective_nics:
-                fallback_bridge = network_bridge_override or self.config.proxmox.default_bridge
+                fallback_bridge = fallback_nic_bridge or network_bridge_override or self.config.proxmox.default_bridge
                 if fallback_bridge:
                     warning = (
                         f"No NICs were discovered for {vm.name}; attaching one default virtio NIC on {fallback_bridge}"
@@ -849,7 +878,8 @@ class MigrationEngine:
                     ]
 
             for index, nic in enumerate(effective_nics):
-                bridge_name = self._resolve_nic_bridge(nic, index, network_bridge_override, nic_bridge_map)
+                bridge_override = fallback_nic_bridge if (not vm.nics and index == 0 and fallback_nic_bridge) else network_bridge_override
+                bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
 
@@ -874,8 +904,19 @@ class MigrationEngine:
                         if resize_gb > current_gb:
                             self.logger.info("Resizing disk %s from %.1f GB to %d GB", disk_path.name, current_gb, resize_gb)
                             resize_disk(source_for_import, resize_gb)
+                        elif resize_gb < current_gb:
+                            if allow_disk_shrink:
+                                self.logger.info("Shrinking disk %s from %.1f GB to %d GB", disk_path.name, current_gb, resize_gb)
+                                resize_disk(source_for_import, resize_gb, shrink_ok=True)
+                            else:
+                                self.logger.warning(
+                                    "Skipping shrink for %s: target %d GB is smaller than current %.1f GB and shrink is not allowed",
+                                    disk_path.name,
+                                    resize_gb,
+                                    current_gb,
+                                )
                         else:
-                            self.logger.info("Skipping resize: target %d GB is not larger than current %.1f GB", resize_gb, current_gb)
+                            self.logger.info("Skipping resize: target %d GB matches current %.1f GB", resize_gb, current_gb)
                     except Exception as resize_err:
                         self.logger.warning("Failed to resize disk %s: %s", disk_path.name, resize_err)
 
@@ -967,6 +1008,8 @@ class MigrationEngine:
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
         disk_resize_map: Optional[dict[str, int]] = None,
+        allow_disk_shrink: bool = False,
+        fallback_nic_bridge: Optional[str] = None,
     ) -> MigrationResult:
         """High-level entry point for local-disk migration with archive support.
 
@@ -1027,6 +1070,8 @@ class MigrationEngine:
                 disk_storage_map=disk_storage_map,
                 nic_bridge_map=nic_bridge_map,
                 disk_resize_map=disk_resize_map,
+                allow_disk_shrink=allow_disk_shrink,
+                fallback_nic_bridge=fallback_nic_bridge,
             )
         finally:
             for tmp in host_temp_dirs:

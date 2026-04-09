@@ -162,6 +162,8 @@ def execute_job(job: MigrationJob) -> MigrationJob:
     bridge = job.bridge or None
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None
     vmid = job.vmid if job.vmid and job.vmid > 0 else None
+    allow_disk_shrink = bool(job.allow_disk_shrink)
+    fallback_nic_bridge = (job.fallback_nic_bridge or "").strip() or None
     log_lines: list[str] = [
         f"Starting job {job.id} ({job.name})",
         f"mode={job.mode}",
@@ -170,6 +172,8 @@ def execute_job(job: MigrationJob) -> MigrationJob:
         f"storage={storage or ''}",
         f"bridge={bridge or ''}",
         f"disk_format={disk_format.value if disk_format else 'auto'}",
+        f"allow_disk_shrink={allow_disk_shrink}",
+        f"fallback_nic_bridge={fallback_nic_bridge or ''}",
         f"dry_run={job.dry_run}",
         f"start_after_import={job.start_after_import}",
     ]
@@ -198,6 +202,8 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 disk_storage_map=job.disk_storage_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
                 disk_resize_map=job.disk_resize_map or None,
+                allow_disk_shrink=allow_disk_shrink,
+                fallback_nic_bridge=fallback_nic_bridge,
             )
         else:
             log_lines.append(f"vmx_specs={json.dumps(job.vmx_specs or {}, default=str)}")
@@ -214,6 +220,8 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 nic_bridge_map=job.nic_bridge_map or None,
                 vmx_specs=job.vmx_specs if job.vmx_specs else None,
                 disk_resize_map=job.disk_resize_map or None,
+                allow_disk_shrink=allow_disk_shrink,
+                fallback_nic_bridge=fallback_nic_bridge,
             )
 
         result_payload = json.loads(json.dumps(asdict(result), default=str))

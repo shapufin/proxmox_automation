@@ -237,6 +237,14 @@
       </div>
 
       <div class="field">
+        <label>Fallback NIC bridge</label>
+        <input type="text" id="wz_fallback_nic_bridge" class="form-input"
+               placeholder="Defaults to the main bridge or vmbr0"
+               oninput="syncField('fallback_nic_bridge', this.value)" />
+        <span class="help">Used only when the source VM has no NICs discovered. Leave blank to use the main bridge.</span>
+      </div>
+
+      <div class="field">
         <label for="wz_disk_format">Disk format</label>
         <select id="wz_disk_format" class="form-select" onchange="syncField('disk_format', this.value)">
           {% for val, label in disk_format_choices %}
@@ -296,6 +304,14 @@
         <div class="toggle-label">
           <strong>▶ Start VM after import</strong>
           <span>Automatically power on the new Proxmox VM once the disk import finishes (ignored during dry run).</span>
+        </div>
+      </label>
+
+      <label class="toggle-row" style="cursor:pointer">
+        <input type="checkbox" id="wz_allow_disk_shrink" onchange="syncField('allow_disk_shrink', this.checked)">
+        <div class="toggle-label">
+          <strong>⚠ Allow destructive disk shrink</strong>
+          <span>Permit shrinking a disk below its current size. This is destructive and only safe if the guest filesystem has already been reduced.</span>
         </div>
       </label>
 
@@ -367,6 +383,8 @@
   <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
   <input type="hidden" name="nic_bridge_map"    id="f_nic_bridge_map"    value="{}">
   <input type="hidden" name="disk_resize_map"    id="f_disk_resize_map"    value="{}">
+  <input type="hidden" name="allow_disk_shrink"  id="f_allow_disk_shrink" value="">
+  <input type="hidden" name="fallback_nic_bridge" id="f_fallback_nic_bridge" value="">
   <input type="hidden" name="vmx_specs"        id="f_vmx_specs"          value="{}">
   <input type="hidden" name="proxmox_host_id"  id="f_proxmox_host_id"  value="">
   <input type="hidden" name="vmware_host_id"   id="f_vmware_host_id"   value="">
@@ -389,6 +407,8 @@ const state = {
   disk_storage_map: {},    // {path: storageId}  per-disk override
   nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
   disk_resize_map:  {},    // {path: sizeGb} per-disk resize override
+  allow_disk_shrink: false,
+  fallback_nic_bridge: '',
   vmx_specs: {},           // Parsed VMX hardware specs
   vmx_overrides: {},       // Manual hardware overrides for incomplete VMX data
   _discoveredStorages: [],
@@ -1087,6 +1107,8 @@ function submitJob() {
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
   document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
   document.getElementById('f_disk_resize_map').value   = JSON.stringify(state.disk_resize_map);
+  document.getElementById('f_allow_disk_shrink').value = state.allow_disk_shrink ? 'on' : '';
+  document.getElementById('f_fallback_nic_bridge').value = state.fallback_nic_bridge || '';
   const mergedVmxSpecs = Object.assign({}, state.vmx_specs || {}, state.vmx_overrides || {});
   document.getElementById('f_vmx_specs').value         = JSON.stringify(mergedVmxSpecs);
   document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';

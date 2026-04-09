@@ -76,6 +76,8 @@ class MigrationJob(models.Model):
     disk_storage_map = models.JSONField(default=dict, blank=True)
     nic_bridge_map = models.JSONField(default=dict, blank=True)
     disk_resize_map = models.JSONField(default=dict, blank=True)
+    allow_disk_shrink = models.BooleanField(default=False)
+    fallback_nic_bridge = models.CharField(max_length=255, blank=True, default="")
     vmx_specs = models.JSONField(default=dict, blank=True)
     dry_run = models.BooleanField(default=True)
     start_after_import = models.BooleanField(default=True)
