@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
@@ -161,38 +162,65 @@ def execute_job(job: MigrationJob) -> MigrationJob:
     bridge = job.bridge or None
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None
     vmid = job.vmid if job.vmid and job.vmid > 0 else None
+    log_lines: list[str] = [
+        f"Starting job {job.id} ({job.name})",
+        f"mode={job.mode}",
+        f"vm_name={vm_name}",
+        f"vmid={vmid if vmid is not None else 'next_free'}",
+        f"storage={storage or ''}",
+        f"bridge={bridge or ''}",
+        f"disk_format={disk_format.value if disk_format else 'auto'}",
+        f"dry_run={job.dry_run}",
+        f"start_after_import={job.start_after_import}",
+    ]
 
-    if job.mode == MigrationMode.LOCAL:
-        _raw_manifest = (job.manifest_path or "").strip()
-        manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else None
-        disk_paths = [Path(path).expanduser() for path in job.source_paths if path and str(path).strip()]
-        result = engine.migrate_local_disks_or_archive(
-            vm_name=vm_name,
-            manifest_path=manifest_path,
-            disk_paths=disk_paths,
-            storage=storage,
-            bridge=bridge,
-            disk_format=disk_format,
-            dry_run=job.dry_run,
-            start_after_import=job.start_after_import,
-            vmx_specs=job.vmx_specs if job.vmx_specs else None,
-            vmid=vmid,
-        )
-    else:
-        result = engine.migrate_vm(
-            vm_name=vm_name,
-            storage=storage,
-            bridge=bridge,
-            disk_format=disk_format,
-            dry_run=job.dry_run,
-            start_after_import=job.start_after_import,
-            vmid=vmid,
-        )
+    try:
+        if job.mode == MigrationMode.LOCAL:
+            _raw_manifest = (job.manifest_path or "").strip()
+            manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else None
+            disk_paths = [Path(path).expanduser() for path in job.source_paths if path and str(path).strip()]
+            log_lines.append(f"manifest_path={manifest_path if manifest_path is not None else 'none'}")
+            log_lines.append(f"source_paths={[str(p) for p in disk_paths]}")
+            result = engine.migrate_local_disks_or_archive(
+                vm_name=vm_name,
+                manifest_path=manifest_path,
+                disk_paths=disk_paths,
+                storage=storage,
+                bridge=bridge,
+                disk_format=disk_format,
+                dry_run=job.dry_run,
+                start_after_import=job.start_after_import,
+                vmx_specs=job.vmx_specs if job.vmx_specs else None,
+                vmid=vmid,
+            )
+        else:
+            result = engine.migrate_vm(
+                vm_name=vm_name,
+                storage=storage,
+                bridge=bridge,
+                disk_format=disk_format,
+                dry_run=job.dry_run,
+                start_after_import=job.start_after_import,
+                vmid=vmid,
+            )
 
-    job.status = JobStatus.SUCCEEDED
-    job.result = json.loads(json.dumps(asdict(result), default=str))
-    job.error = ""
-    job.finished_at = timezone.now()
-    job.logs = f"Migration completed successfully for {job.name}\n"
-    job.save(update_fields=["status", "result", "error", "logs", "updated_at", "finished_at"])
-    return job
+        result_payload = json.loads(json.dumps(asdict(result), default=str))
+        job.status = JobStatus.SUCCEEDED
+        job.result = result_payload
+        job.error = ""
+        job.finished_at = timezone.now()
+        log_lines.append("Migration completed successfully")
+        log_lines.append(f"result={json.dumps(result_payload, default=str)}")
+        job.logs = "\n".join(log_lines) + "\n"
+        job.save(update_fields=["status", "result", "error", "logs", "updated_at", "finished_at"])
+        return job
+    except Exception as exc:
+        job.status = JobStatus.FAILED
+        job.error = str(exc)
+        job.finished_at = timezone.now()
+        tb = traceback.format_exc()
+        log_lines.append(f"ERROR={type(exc).__name__}: {exc}")
+        log_lines.append(tb)
+        job.logs = "\n".join(log_lines) + "\n"
+        job.save(update_fields=["status", "error", "logs", "updated_at", "finished_at"])
+        raise

@@ -122,11 +122,11 @@ for line in text.splitlines():
         continue
     src = m.group('src')
     try:
-        uuid = subprocess.check_output(['blkid', '-s', 'UUID', '-o', 'value', src], text=True).strip()
+        fs_uuid = subprocess.check_output(['blkid', '-s', 'UUID', '-o', 'value', src], text=True).strip()
     except Exception:
-        uuid = ''
-    if uuid:
-        line = line.replace(src, f'UUID={uuid}', 1)
+        fs_uuid = ''
+    if fs_uuid:
+        line = line.replace(src, f'UUID={{fs_uuid}}', 1)
     lines.append(line)
 fstab.write_text('\n'.join(lines) + '\n')
 PY
