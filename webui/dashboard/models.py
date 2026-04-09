@@ -65,6 +65,7 @@ class MigrationJob(models.Model):
     mode = models.CharField(max_length=20, choices=MigrationMode.choices, default=MigrationMode.LOCAL)
     config_profile = models.CharField(max_length=255, blank=True, default="")
     vm_name = models.CharField(max_length=255, blank=True, default="")
+    vmid = models.IntegerField(null=True, blank=True)
     manifest_path = models.CharField(max_length=1024, blank=True, default="")
     source_paths = models.JSONField(default=list, blank=True)
     storage = models.CharField(max_length=255, blank=True, default="")

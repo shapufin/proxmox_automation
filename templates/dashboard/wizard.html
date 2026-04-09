@@ -246,6 +246,13 @@
         <span class="help"><strong>Auto</strong> converts to qcow2. Use <strong>raw</strong> for maximum IOPS on LVM/ZFS storage.</span>
       </div>
 
+      <div class="field">
+        <label for="wz_vmid">Proxmox VMID <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <input type="number" id="wz_vmid" class="form-input" min="1" placeholder="Leave blank to use next free ID"
+               oninput="syncField('vmid', this.value ? parseInt(this.value, 10) : '')" />
+        <span class="help">If left blank, Proxmox will automatically pick the next free VM ID.</span>
+      </div>
+
       <div class="wz-actions">
         <button class="btn btn-secondary" onclick="gotoStep(2)">← Back</button>
         <button class="btn btn-primary" onclick="validateStep3()">Next: Options →</button>
@@ -282,6 +289,7 @@
           <tr><td style="color:var(--muted);padding:4px 0">Storage</td><td id="sum_storage">—</td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Bridge</td><td id="sum_bridge">—</td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Disk format</td><td id="sum_fmt">—</td></tr>
+          <tr><td style="color:var(--muted);padding:4px 0">VMID</td><td id="sum_vmid">Next free</td></tr>
           <tr id="sum_hw_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware (VMX)</td><td id="sum_hw"></td></tr>
           <tr><td style="color:var(--muted);padding:4px 0">Dry run</td><td id="sum_dry"><span class="badge badge-warning">Yes</span></td></tr>
         </table>
@@ -332,6 +340,7 @@
   <input type="hidden" name="storage"          id="f_storage">
   <input type="hidden" name="bridge"           id="f_bridge">
   <input type="hidden" name="disk_format"      id="f_disk_format" value="">
+  <input type="hidden" name="vmid"             id="f_vmid"        value="">
   <input type="hidden" name="dry_run"          id="f_dry_run"     value="on">
   <input type="hidden" name="start_after_import" id="f_start"    value="on">
   <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
@@ -351,6 +360,7 @@ const state = {
   proxmox_host_id: '', vmware_host_id: '',
   vm_name: '', directory: '', manifest_path: '',
   storage: '', bridge: '', disk_format: '',  // '' = auto
+  vmid: '',
   dry_run: true, start_after_import: true,
   source_paths: [],        // array of host-absolute paths
   disk_storage_map: {},    // {path: storageId}  per-disk override
@@ -560,6 +570,7 @@ function updateSummary() {
   setText('sum_storage', state.storage || '—');
   setText('sum_bridge',  state.bridge  || '—');
   setText('sum_fmt',     state.disk_format || 'Auto (qcow2)');
+  setText('sum_vmid',    state.vmid ? String(state.vmid) : 'Next free');
   // VMX hardware hints row
   const hwCell = document.getElementById('sum_hw');
   const hwTr   = document.getElementById('sum_hw_row');
@@ -927,6 +938,7 @@ function submitJob() {
   document.getElementById('f_storage').value  = state.storage;
   document.getElementById('f_bridge').value   = state.bridge;
   document.getElementById('f_disk_format').value = state.disk_format || '';
+  document.getElementById('f_vmid').value       = state.vmid || '';
   document.getElementById('f_dry_run').value  = state.dry_run ? 'on' : '';
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);

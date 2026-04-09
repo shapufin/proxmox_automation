@@ -109,6 +109,7 @@
     <div class="panel-title"><span class="icon">📋</span> Job Details</div>
     <table style="width:100%;font-size:0.88rem;border-collapse:collapse">
       <tr><td style="color:var(--muted);padding:6px 0;width:130px">VM / Name</td><td style="font-weight:600">{{ job.vm_name|default:"—" }}</td></tr>
+      <tr><td style="color:var(--muted);padding:6px 0">VMID</td><td>{{ job.vmid|default:"Next free" }}</td></tr>
       <tr><td style="color:var(--muted);padding:6px 0">Storage</td><td>{{ job.storage|default:"auto" }}</td></tr>
       <tr><td style="color:var(--muted);padding:6px 0">Bridge</td><td>{{ job.bridge|default:"auto" }}</td></tr>
       <tr><td style="color:var(--muted);padding:6px 0">Disk format</td><td>{{ job.disk_format|default:"auto" }}</td></tr>

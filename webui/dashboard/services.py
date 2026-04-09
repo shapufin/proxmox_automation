@@ -160,11 +160,12 @@ def execute_job(job: MigrationJob) -> MigrationJob:
     storage = job.storage or None
     bridge = job.bridge or None
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None
+    vmid = job.vmid if job.vmid and job.vmid > 0 else None
 
     if job.mode == MigrationMode.LOCAL:
         _raw_manifest = (job.manifest_path or "").strip()
         manifest_path = resolve_stage_path(_raw_manifest) if _raw_manifest else Path("")
-        disk_paths = [resolve_stage_path(path) for path in job.source_paths if path and str(path).strip()]
+        disk_paths = [Path(path).expanduser() for path in job.source_paths if path and str(path).strip()]
         result = engine.migrate_local_disks_or_archive(
             vm_name=vm_name,
             manifest_path=manifest_path,
@@ -175,6 +176,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
             dry_run=job.dry_run,
             start_after_import=job.start_after_import,
             vmx_specs=job.vmx_specs if job.vmx_specs else None,
+            vmid=vmid,
         )
     else:
         result = engine.migrate_vm(
@@ -184,6 +186,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
             disk_format=disk_format,
             dry_run=job.dry_run,
             start_after_import=job.start_after_import,
+            vmid=vmid,
         )
 
     job.status = JobStatus.SUCCEEDED

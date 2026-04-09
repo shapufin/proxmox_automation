@@ -212,6 +212,7 @@ def launch_job(request: HttpRequest) -> HttpResponse:
             mode=form.cleaned_data["mode"],
             config_profile=form.cleaned_data.get("config_profile", ""),
             vm_name=form.cleaned_data.get("vm_name", ""),
+            vmid=form.cleaned_data.get("vmid") or None,
             manifest_path=form.cleaned_data.get("manifest_path", ""),
             source_paths=form.normalized_source_paths(),
             storage=form.cleaned_data.get("storage", ""),

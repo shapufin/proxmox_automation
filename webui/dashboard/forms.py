@@ -50,6 +50,7 @@ class MigrationJobForm(forms.Form):
     directory = forms.CharField(max_length=1024, required=False, initial="")
     config_profile = forms.ChoiceField(choices=(), required=False)
     vm_name = forms.ChoiceField(choices=(), required=False)
+    vmid = forms.IntegerField(required=False, min_value=1)
     manifest_path = forms.CharField(max_length=1024, required=False)
     storage = forms.CharField(max_length=255, required=False)
     bridge  = forms.CharField(max_length=255, required=False)

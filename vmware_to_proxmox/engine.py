@@ -278,6 +278,7 @@ class MigrationEngine:
         start_after_import: bool = True,
         write_manifest: bool = True,
         vmx_specs: Optional[dict] = None,
+        vmid: Optional[int] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -289,7 +290,7 @@ class MigrationEngine:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
-        vmid = self.proxmox.next_vmid()
+        vmid = vmid or self.proxmox.next_vmid()
         source_paths = self._resolve_local_disk_paths(disk_paths, vm)
         self.logger.info(
             "Local migration path resolution for %s: %s candidate(s) -> %s resolved disk(s)",
@@ -428,13 +429,14 @@ class MigrationEngine:
         dry_run: Optional[bool] = None,
         start_after_import: bool = True,
         write_manifest: bool = True,
+        vmid: Optional[int] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
             warnings = self.vmware.validate_supported(vm)
-        return self._migrate_vmware(vm, warnings, storage, bridge, disk_format, dry_run, start_after_import, write_manifest)
+        return self._migrate_vmware(vm, warnings, storage, bridge, disk_format, dry_run, start_after_import, write_manifest, vmid=vmid)
 
     def _migrate_vmware(
         self,
@@ -446,11 +448,12 @@ class MigrationEngine:
         dry_run: bool,
         start_after_import: bool,
         write_manifest: bool,
+        vmid: Optional[int] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
-        vmid = self.proxmox.next_vmid()
+        vmid = vmid or self.proxmox.next_vmid()
         network_bridge_override = bridge
 
         if dry_run:
@@ -582,6 +585,7 @@ class MigrationEngine:
         dry_run: Optional[bool] = None,
         start_after_import: bool = True,
         vmx_specs: Optional[dict] = None,
+        vmid: Optional[int] = None,
     ) -> MigrationResult:
         """High-level entry point for local-disk migration with archive support.
 
@@ -638,6 +642,7 @@ class MigrationEngine:
                 dry_run=dry_run,
                 start_after_import=start_after_import,
                 vmx_specs=vmx_specs,
+                vmid=vmid,
             )
         finally:
             for tmp in host_temp_dirs:
