@@ -206,3 +206,60 @@ def qemu_info(path: Path) -> dict[str, object]:
     import json
 
     return json.loads(proc.stdout or "{}")
+
+
+def resize_disk(path: Path, size_gb: int, shrink_ok: bool = False) -> Path:
+    """Resize a disk image to the specified size in GB.
+
+    Args:
+        path: Path to the disk image
+        size_gb: Target size in gigabytes
+        shrink_ok: Allow shrinking (default False for safety)
+
+    Returns:
+        The path to the resized disk
+
+    Raises:
+        DiskConversionError: If resize fails or would shrink without shrink_ok=True
+    """
+    ensure_qemu_img()
+
+    # Get current size
+    info = qemu_info(path)
+    current_bytes = int(info.get("virtual-size", 0))
+    current_gb = current_bytes / (1024 ** 3)
+
+    target_bytes = size_gb * (1024 ** 3)
+
+    # Safety check: prevent accidental shrinking unless explicitly allowed
+    if target_bytes < current_bytes and not shrink_ok:
+        raise DiskConversionError(
+            f"Refusing to shrink disk from {current_gb:.2f} GB to {size_gb} GB. "
+            f"Set shrink_ok=True to allow shrinking."
+        )
+
+    # Build resize command
+    size_spec = f"{size_gb}G"
+    args = ["qemu-img", "resize", str(path), size_spec]
+
+    # Add shrink flag if needed (for certain formats that support it)
+    if shrink_ok and target_bytes < current_bytes:
+        args.insert(3, "--shrink-preallocated")
+
+    proc = subprocess.run(args, text=True, capture_output=True)
+    if proc.returncode != 0:
+        raise DiskConversionError(
+            f"qemu-img resize failed:\nCMD: {' '.join(args)}\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+        )
+
+    return path
+
+
+def get_disk_size_gb(path: Path) -> float:
+    """Return the virtual disk size in GB."""
+    try:
+        info = qemu_info(path)
+        bytes_size = int(info.get("virtual-size", 0))
+        return bytes_size / (1024 ** 3)
+    except Exception:
+        return 0.0

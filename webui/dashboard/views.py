@@ -220,6 +220,7 @@ def launch_job(request: HttpRequest) -> HttpResponse:
             disk_format=form.cleaned_data.get("disk_format", ""),
             disk_storage_map=_parse_json_field(form.cleaned_data.get("disk_storage_map", "")),
             nic_bridge_map=_parse_json_field(form.cleaned_data.get("nic_bridge_map", "")),
+            disk_resize_map=_parse_json_field(form.cleaned_data.get("disk_resize_map", "")),
             vmx_specs=_parse_json_field(form.cleaned_data.get("vmx_specs", "")),
             proxmox_host=ProxmoxHost.objects.filter(pk=form.cleaned_data.get("proxmox_host_id") or 0).first(),
             vmware_host=VMwareHost.objects.filter(pk=form.cleaned_data.get("vmware_host_id") or 0).first(),

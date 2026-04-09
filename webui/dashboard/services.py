@@ -183,6 +183,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
             log_lines.append(f"source_paths={[str(p) for p in disk_paths]}")
             log_lines.append(f"disk_storage_map={json.dumps(job.disk_storage_map or {}, default=str)}")
             log_lines.append(f"nic_bridge_map={json.dumps(job.nic_bridge_map or {}, default=str)}")
+            log_lines.append(f"disk_resize_map={json.dumps(job.disk_resize_map or {}, default=str)}")
             result = engine.migrate_local_disks_or_archive(
                 vm_name=vm_name,
                 manifest_path=manifest_path,
@@ -196,9 +197,11 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 vmid=vmid,
                 disk_storage_map=job.disk_storage_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
+                disk_resize_map=job.disk_resize_map or None,
             )
         else:
             log_lines.append(f"vmx_specs={json.dumps(job.vmx_specs or {}, default=str)}")
+            log_lines.append(f"disk_resize_map={json.dumps(job.disk_resize_map or {}, default=str)}")
             result = engine.migrate_vm(
                 vm_name=vm_name,
                 storage=storage,
@@ -210,6 +213,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 disk_storage_map=job.disk_storage_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
                 vmx_specs=job.vmx_specs if job.vmx_specs else None,
+                disk_resize_map=job.disk_resize_map or None,
             )
 
         result_payload = json.loads(json.dumps(asdict(result), default=str))

@@ -75,6 +75,7 @@ class MigrationJob(models.Model):
     vmware_host  = models.ForeignKey("VMwareHost",  null=True, blank=True, on_delete=models.SET_NULL)
     disk_storage_map = models.JSONField(default=dict, blank=True)
     nic_bridge_map = models.JSONField(default=dict, blank=True)
+    disk_resize_map = models.JSONField(default=dict, blank=True)
     vmx_specs = models.JSONField(default=dict, blank=True)
     dry_run = models.BooleanField(default=True)
     start_after_import = models.BooleanField(default=True)

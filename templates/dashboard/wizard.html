@@ -366,6 +366,7 @@
   <input type="hidden" name="start_after_import" id="f_start"    value="on">
   <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
   <input type="hidden" name="nic_bridge_map"    id="f_nic_bridge_map"    value="{}">
+  <input type="hidden" name="disk_resize_map"    id="f_disk_resize_map"    value="{}">
   <input type="hidden" name="vmx_specs"        id="f_vmx_specs"          value="{}">
   <input type="hidden" name="proxmox_host_id"  id="f_proxmox_host_id"  value="">
   <input type="hidden" name="vmware_host_id"   id="f_vmware_host_id"   value="">
@@ -387,6 +388,7 @@ const state = {
   vmx_disk_specs: [],      // parsed VMX disk rows
   disk_storage_map: {},    // {path: storageId}  per-disk override
   nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
+  disk_resize_map:  {},    // {path: sizeGb} per-disk resize override
   vmx_specs: {},           // Parsed VMX hardware specs
   vmx_overrides: {},       // Manual hardware overrides for incomplete VMX data
   _discoveredStorages: [],
@@ -546,18 +548,24 @@ function buildPerDiskRows(storages) {
     controller_type: 'scsi',
     controller: i,
     unit_number: 0,
+    capacity_gb: 0,
   }));
-  if (disks.length <= 1) { document.getElementById('per-disk-storage').style.display = 'none'; return; }
+  if (disks.length === 0) { document.getElementById('per-disk-storage').style.display = 'none'; return; }
   document.getElementById('per-disk-storage').style.display = '';
   const rows = document.getElementById('disk-storage-rows');
   rows.innerHTML = '';
-  disks.forEach((path, i) => {
-    const key = path.path || path.file_name || path.label || `disk-${i}`;
-    const name = path.file_name || key.split('/').pop();
+  disks.forEach((disk, i) => {
+    const key = disk.path || disk.file_name || disk.label || `disk-${i}`;
+    const name = disk.file_name || key.split('/').pop();
+    // Estimate source size for display
+    const sourceGb = disk.capacity_gb || (disk.capacity_bytes ? Math.round(disk.capacity_bytes / (1024**3)) : 0);
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
-    const meta = [path.label, path.datastore ? `datastore: ${path.datastore}` : '', path.controller_type ? `${path.controller_type}${path.controller !== undefined ? path.controller : ''}` : ''].filter(Boolean).join(' · ');
-    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(key)}">💿 ${esc(name)}${meta ? `<div style="font-size:0.76rem;color:var(--muted)">${esc(meta)}</div>` : ''}</span>`;
+    const meta = [disk.label, disk.datastore ? `datastore: ${disk.datastore}` : '', disk.controller_type ? `${disk.controller_type}${disk.controller !== undefined ? disk.controller : ''}` : ''].filter(Boolean).join(' · ');
+    const sourceSizeLabel = sourceGb ? `<span style="color:var(--accent)">${sourceGb} GB</span>` : '';
+    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(key)}">💿 ${esc(name)} ${sourceSizeLabel}${meta ? `<div style="font-size:0.76rem;color:var(--muted)">${esc(meta)}</div>` : ''}</span>`;
+
+    // Storage selection
     const sel = document.createElement('select');
     sel.className = 'form-select';
     sel.style.flex = '1';
@@ -578,7 +586,37 @@ function buildPerDiskRows(storages) {
       const value = txt.value.trim();
       if (value) state.disk_storage_map[key] = value; else delete state.disk_storage_map[key];
     });
-    row.appendChild(sel); row.appendChild(txt);
+
+    // Resize input (GB)
+    const resizeWrapper = document.createElement('div');
+    resizeWrapper.style.cssText = 'display:flex;align-items:center;gap:4px;flex:1';
+    const resizeInput = document.createElement('input');
+    resizeInput.type = 'number';
+    resizeInput.className = 'form-input';
+    resizeInput.style.flex = '1';
+    resizeInput.min = sourceGb || 1;
+    resizeInput.placeholder = sourceGb ? `≥${sourceGb} GB` : 'Size GB';
+    if (state.disk_resize_map[key]) {
+      resizeInput.value = state.disk_resize_map[key];
+    }
+    resizeInput.addEventListener('input', () => {
+      const val = parseInt(resizeInput.value, 10);
+      if (val && val >= (sourceGb || 1)) {
+        state.disk_resize_map[key] = val;
+      } else {
+        delete state.disk_resize_map[key];
+      }
+    });
+    const resizeLabel = document.createElement('span');
+    resizeLabel.textContent = 'GB';
+    resizeLabel.style.color = 'var(--muted)';
+    resizeLabel.style.fontSize = '0.76rem';
+    resizeWrapper.appendChild(resizeInput);
+    resizeWrapper.appendChild(resizeLabel);
+
+    row.appendChild(sel);
+    row.appendChild(txt);
+    row.appendChild(resizeWrapper);
     rows.appendChild(row);
   });
 }
@@ -1048,6 +1086,7 @@ function submitJob() {
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
   document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
+  document.getElementById('f_disk_resize_map').value   = JSON.stringify(state.disk_resize_map);
   const mergedVmxSpecs = Object.assign({}, state.vmx_specs || {}, state.vmx_overrides || {});
   document.getElementById('f_vmx_specs').value         = JSON.stringify(mergedVmxSpecs);
   document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';

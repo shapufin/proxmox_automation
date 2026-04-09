@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .config import AppConfig
-from .disk import DiskConversionError, convert_disk, detect_archive_type, detect_disk_format, qemu_info, sha256_file
+from .disk import DiskConversionError, convert_disk, detect_archive_type, detect_disk_format, qemu_info, resize_disk, get_disk_size_gb, sha256_file
 from .guest import GuestRemediator
 from .models import DiskFormat, FirmwareMode, MigrationResult, MigrationTarget, VmwareDiskSpec, VmwareNicSpec, VmwareVmSpec
 from .proxmox import ProxmoxClient, ProxmoxClientError
@@ -142,6 +142,32 @@ class MigrationEngine:
             str(index),
         )
         return self._resolve_bridge(mapped or bridge_override or self.config.bridge_for_network(network_name))
+
+    @staticmethod
+    def _resolve_disk_resize(
+        disk_key: str,
+        disk_resize_map: Optional[dict[str, int]] = None,
+    ) -> Optional[int]:
+        """Look up a target resize size (in GB) for a disk from the resize map.
+
+        Tries exact key match first, then falls back to disk index patterns.
+        Returns None if no resize is configured for this disk.
+        """
+        if not disk_resize_map:
+            return None
+        # Try exact match
+        if disk_key in disk_resize_map:
+            val = disk_resize_map[disk_key]
+            if val and int(val) > 0:
+                return int(val)
+        # Try filename-only match (basename)
+        from pathlib import Path
+        basename = Path(disk_key).name
+        if basename in disk_resize_map and basename != disk_key:
+            val = disk_resize_map[basename]
+            if val and int(val) > 0:
+                return int(val)
+        return None
 
     def inventory(self) -> dict[str, object]:
         self.proxmox.ensure_prerequisites()
@@ -625,6 +651,20 @@ class MigrationEngine:
                     except DiskConversionError:
                         converted_path = source_path
 
+                # Apply resize if specified (after conversion, before import)
+                resize_key = str(source_path)
+                resize_gb = self._resolve_disk_resize(resize_key, disk_resize_map)
+                if resize_gb:
+                    try:
+                        current_gb = get_disk_size_gb(converted_path)
+                        if resize_gb > current_gb:
+                            self.logger.info("Resizing disk %s from %.1f GB to %d GB", source_path.name, current_gb, resize_gb)
+                            resize_disk(converted_path, resize_gb)
+                        else:
+                            self.logger.info("Skipping resize: target %d GB is not larger than current %.1f GB", resize_gb, current_gb)
+                    except Exception as resize_err:
+                        self.logger.warning("Failed to resize disk %s: %s", source_path.name, resize_err)
+
                 disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
                 volume_id = self.proxmox.import_disk(vmid, converted_path, disk_target_storage, target_format)
                 slot = f"scsi{index}"
@@ -696,6 +736,7 @@ class MigrationEngine:
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
         vmx_specs: Optional[dict] = None,
+        disk_resize_map: Optional[dict[str, int]] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -715,6 +756,7 @@ class MigrationEngine:
             vmid=vmid,
             disk_storage_map=disk_storage_map,
             nic_bridge_map=nic_bridge_map,
+            disk_resize_map=disk_resize_map,
         )
 
     def _migrate_vmware(
@@ -730,6 +772,7 @@ class MigrationEngine:
         vmid: Optional[int] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
+        disk_resize_map: Optional[dict[str, int]] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
@@ -811,6 +854,20 @@ class MigrationEngine:
                 except DiskConversionError:
                     source_for_import = disk_path
                     converted_path = disk_path
+
+                # Apply resize if specified (after conversion, before import)
+                resize_key = str(disk_path)
+                resize_gb = self._resolve_disk_resize(resize_key, disk_resize_map)
+                if resize_gb:
+                    try:
+                        current_gb = get_disk_size_gb(source_for_import)
+                        if resize_gb > current_gb:
+                            self.logger.info("Resizing disk %s from %.1f GB to %d GB", disk_path.name, current_gb, resize_gb)
+                            resize_disk(source_for_import, resize_gb)
+                        else:
+                            self.logger.info("Skipping resize: target %d GB is not larger than current %.1f GB", resize_gb, current_gb)
+                    except Exception as resize_err:
+                        self.logger.warning("Failed to resize disk %s: %s", disk_path.name, resize_err)
 
                 disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
                 volume_id = self.proxmox.import_disk(vmid, source_for_import, disk_target_storage, target_format)
@@ -899,6 +956,7 @@ class MigrationEngine:
         vmid: Optional[int] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
+        disk_resize_map: Optional[dict[str, int]] = None,
     ) -> MigrationResult:
         """High-level entry point for local-disk migration with archive support.
 
@@ -958,6 +1016,7 @@ class MigrationEngine:
                 vmid=vmid,
                 disk_storage_map=disk_storage_map,
                 nic_bridge_map=nic_bridge_map,
+                disk_resize_map=disk_resize_map,
             )
         finally:
             for tmp in host_temp_dirs:

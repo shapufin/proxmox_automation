@@ -57,6 +57,7 @@ class MigrationJobForm(forms.Form):
     disk_format = forms.ChoiceField(choices=[("", "Auto"), ("qcow2", "qcow2"), ("raw", "raw")], required=False)
     disk_storage_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     nic_bridge_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
+    disk_resize_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     vmx_specs = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     proxmox_host_id = forms.IntegerField(required=False, widget=forms.HiddenInput)
     vmware_host_id = forms.IntegerField(required=False, widget=forms.HiddenInput)
