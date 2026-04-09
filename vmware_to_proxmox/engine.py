@@ -503,6 +503,7 @@ class MigrationEngine:
         vmid: Optional[int] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
+        disk_resize_map: Optional[dict[str, int]] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -658,12 +659,21 @@ class MigrationEngine:
                     try:
                         current_gb = get_disk_size_gb(converted_path)
                         if resize_gb > current_gb:
-                            self.logger.info("Resizing disk %s from %.1f GB to %d GB", source_path.name, current_gb, resize_gb)
+                            self.logger.info(
+                                "Resizing local disk %s from %.1f GB to %d GB",
+                                source_path.name,
+                                current_gb,
+                                resize_gb,
+                            )
                             resize_disk(converted_path, resize_gb)
                         else:
-                            self.logger.info("Skipping resize: target %d GB is not larger than current %.1f GB", resize_gb, current_gb)
+                            self.logger.info(
+                                "Skipping local resize: target %d GB is not larger than current %.1f GB",
+                                resize_gb,
+                                current_gb,
+                            )
                     except Exception as resize_err:
-                        self.logger.warning("Failed to resize disk %s: %s", source_path.name, resize_err)
+                        self.logger.warning("Failed to resize local disk %s: %s", source_path.name, resize_err)
 
                 disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
                 volume_id = self.proxmox.import_disk(vmid, converted_path, disk_target_storage, target_format)
