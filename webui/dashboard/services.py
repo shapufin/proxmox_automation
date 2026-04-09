@@ -198,6 +198,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 nic_bridge_map=job.nic_bridge_map or None,
             )
         else:
+            log_lines.append(f"vmx_specs={json.dumps(job.vmx_specs or {}, default=str)}")
             result = engine.migrate_vm(
                 vm_name=vm_name,
                 storage=storage,
@@ -208,6 +209,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 vmid=vmid,
                 disk_storage_map=job.disk_storage_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
+                vmx_specs=job.vmx_specs if job.vmx_specs else None,
             )
 
         result_payload = json.loads(json.dumps(asdict(result), default=str))

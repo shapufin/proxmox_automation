@@ -588,7 +588,25 @@ class MigrationEngine:
             if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
                 self.proxmox.add_efi_disk(vmid, target_storage, target_format)
 
-            for index, nic in enumerate(vm.nics):
+            effective_nics = list(vm.nics)
+            if not effective_nics:
+                fallback_bridge = network_bridge_override or self.config.proxmox.default_bridge
+                if fallback_bridge:
+                    warning = (
+                        f"No NICs were discovered for {vm.name}; attaching one default virtio NIC on {fallback_bridge}"
+                    )
+                    self.logger.warning(warning)
+                    warnings = list(warnings) + [warning]
+                    effective_nics = [
+                        VmwareNicSpec(
+                            label="Network adapter 0",
+                            network_name=fallback_bridge,
+                            mac_address="",
+                            adapter_type="virtio",
+                        )
+                    ]
+
+            for index, nic in enumerate(effective_nics):
                 bridge_name = self._resolve_nic_bridge(nic, index, bridge, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
@@ -677,11 +695,13 @@ class MigrationEngine:
         vmid: Optional[int] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
+        vmx_specs: Optional[dict] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
+            vm = self._apply_vmx_specs(vm, vmx_specs)
             warnings = self.vmware.validate_supported(vm)
         return self._migrate_vmware(
             vm,
@@ -757,7 +777,25 @@ class MigrationEngine:
             if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
                 self.proxmox.add_efi_disk(vmid, target_storage, target_format)
 
-            for index, nic in enumerate(vm.nics):
+            effective_nics = list(vm.nics)
+            if not effective_nics:
+                fallback_bridge = network_bridge_override or self.config.proxmox.default_bridge
+                if fallback_bridge:
+                    warning = (
+                        f"No NICs were discovered for {vm.name}; attaching one default virtio NIC on {fallback_bridge}"
+                    )
+                    self.logger.warning(warning)
+                    warnings = list(warnings) + [warning]
+                    effective_nics = [
+                        VmwareNicSpec(
+                            label="Network adapter 0",
+                            network_name=fallback_bridge,
+                            mac_address="",
+                            adapter_type="virtio",
+                        )
+                    ]
+
+            for index, nic in enumerate(effective_nics):
                 bridge_name = self._resolve_nic_bridge(nic, index, network_bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
