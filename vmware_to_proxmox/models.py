@@ -50,11 +50,13 @@ class VmwareVmSpec:
     firmware: str
     memory_mb: int
     cpu_count: int
+    hardware_version: str = ""
     annotation: str = ""
     datastore: str = ""
     disks: list[VmwareDiskSpec] = field(default_factory=list)
     nics: list[VmwareNicSpec] = field(default_factory=list)
     has_snapshots: bool = False
+    snapshot_count: int = 0
     has_vtpm: bool = False
     has_pci_passthrough: bool = False
 

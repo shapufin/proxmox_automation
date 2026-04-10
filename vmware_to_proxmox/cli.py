@@ -142,6 +142,7 @@ def plan(
         "warnings": plan_result.warnings,
         "nics": plan_result.nics,
         "disks": plan_result.disks,
+        "compatibility": plan_result.compatibility,
     }, indent=2, sort_keys=True))
 
 

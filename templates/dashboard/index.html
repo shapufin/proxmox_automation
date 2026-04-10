@@ -40,7 +40,7 @@
   </div>
   <div class="stat-card">
     <div class="stat-label">Total Jobs</div>
-    <div class="stat-value">{{ jobs|length }}</div>
+    <div class="stat-value">{{ job_count }}</div>
     <div class="stat-sub">all time</div>
   </div>
 </div>
@@ -120,7 +120,19 @@
 <div class="panel">
   <div class="section-header">
     <div class="panel-title" style="border:none;margin:0;padding:0"><span class="icon">📋</span> Recent Jobs</div>
-    <a href="/wizard/" class="btn btn-primary btn-sm">+ New Job</a>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <form method="get" action="/" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:0.82rem;color:var(--muted)">Compatibility</label>
+        <select name="compatibility" class="input" style="min-width:150px;padding:8px 10px">
+          {% for choice in compatibility_filter_choices %}
+            <option value="{{ choice.value }}" {% if choice.selected == "true" %}selected{% endif %}>{{ choice.label }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-secondary btn-sm">Apply</button>
+      </form>
+      <a href="/jobs/compatibility/" class="btn btn-secondary btn-sm">History</a>
+      <a href="/wizard/" class="btn btn-primary btn-sm">+ New Job</a>
+    </div>
   </div>
   <table class="table">
     <thead>
@@ -135,7 +147,8 @@
       </tr>
     </thead>
     <tbody>
-      {% for job in jobs %}
+      {% for item in job_contexts %}
+        {% with job=item.job compatibility=item.compatibility %}
         <tr>
           <td><a href="/jobs/{{ job.id }}/">{{ job.id }}</a></td>
           <td style="font-weight:500">{{ job.name }}</td>
@@ -163,10 +176,22 @@
             {% else %}
               <span class="badge badge-muted">Pending</span>
             {% endif %}
+            {% if compatibility.report %}
+              <div style="margin-top:6px">
+                {% if compatibility.state == "blocked" %}
+                  <span class="badge badge-error">Compat: Blocked</span>
+                {% elif compatibility.state == "warnings" %}
+                  <span class="badge badge-warning">Compat: Warnings</span>
+                {% else %}
+                  <span class="badge badge-success">Compat: OK</span>
+                {% endif %}
+              </div>
+            {% endif %}
           </td>
           <td style="color:var(--muted);font-size:0.83rem">{{ job.updated_at|date:"Y-m-d H:i" }}</td>
           <td><a href="/jobs/{{ job.id }}/" class="btn btn-secondary btn-sm">View</a></td>
         </tr>
+        {% endwith %}
       {% empty %}
         <tr class="no-data"><td colspan="7">No jobs yet — <a href="/wizard/">start your first migration</a>.</td></tr>
       {% endfor %}

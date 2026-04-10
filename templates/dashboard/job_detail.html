@@ -129,6 +129,48 @@
       </ul>
     </div>
     {% endif %}
+
+    <div style="margin-top:14px">
+      <div style="font-size:0.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px">Compatibility</div>
+      {% if compatibility.report %}
+        <div class="badge {{ compatibility.state_badge }}" style="margin-bottom:10px">{{ compatibility.state_label }}</div>
+        {% if compatibility.summary %}
+          <div style="margin-bottom:10px;color:var(--text);font-size:0.88rem">{{ compatibility.summary }}</div>
+        {% endif %}
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;font-size:0.82rem">
+          <div><strong>{{ compatibility.blocking_count }}</strong> blocker(s)</div>
+          <div><strong>{{ compatibility.warning_count }}</strong> warning(s)</div>
+          <div><strong>{{ compatibility.recommendation_count }}</strong> recommendation(s)</div>
+          <div><strong>{{ compatibility.hardware.disk_count|default:0 }}</strong> disk(s)</div>
+        </div>
+        {% if compatibility.blocking_issues %}
+          <div style="margin-top:10px">
+            <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Blockers</div>
+            <ul class="list">
+              {% for item in compatibility.blocking_issues %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        {% if compatibility.warnings %}
+          <div style="margin-top:10px">
+            <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Warnings</div>
+            <ul class="list">
+              {% for item in compatibility.warnings %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        {% if compatibility.recommendations %}
+          <div style="margin-top:10px">
+            <div style="font-size:0.78rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Recommendations</div>
+            <ul class="list">
+              {% for item in compatibility.recommendations %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="log-box">Compatibility data not available for this job.</div>
+      {% endif %}
+    </div>
   </div>
 
 </div>

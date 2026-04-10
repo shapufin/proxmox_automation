@@ -8,11 +8,23 @@
     <div class="page-title">Migration Jobs</div>
     <div class="page-subtitle">All jobs — most recent first.</div>
   </div>
-  <a href="/wizard/" class="btn btn-primary">⚡ New Migration</a>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <form method="get" action="/jobs/" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:0.82rem;color:var(--muted)">Compatibility</label>
+      <select name="compatibility" class="input" style="min-width:150px;padding:8px 10px">
+        {% for choice in compatibility_filter_choices %}
+          <option value="{{ choice.value }}" {% if choice.selected == "true" %}selected{% endif %}>{{ choice.label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn btn-secondary btn-sm">Apply</button>
+    </form>
+    <a href="/jobs/compatibility/" class="btn btn-secondary">History</a>
+    <a href="/wizard/" class="btn btn-primary">⚡ New Migration</a>
+  </div>
 </div>
 
 <div class="panel">
-  {% if jobs %}
+  {% if job_contexts %}
   <table class="table">
     <thead>
       <tr>
@@ -27,7 +39,8 @@
       </tr>
     </thead>
     <tbody>
-      {% for job in jobs %}
+      {% for item in job_contexts %}
+      {% with job=item.job compatibility=item.compatibility %}
       <tr>
         <td style="color:var(--muted)">{{ job.id }}</td>
         <td style="font-weight:600">{{ job.name }}</td>
@@ -47,6 +60,17 @@
             <span class="badge badge-warning">⟳ Running</span>
           {% else %}
             <span class="badge badge-muted">… Pending</span>
+          {% endif %}
+          {% if compatibility.report %}
+            <div style="margin-top:6px">
+              {% if compatibility.state == "blocked" %}
+                <span class="badge badge-error">Compat: Blocked</span>
+              {% elif compatibility.state == "warnings" %}
+                <span class="badge badge-warning">Compat: Warnings</span>
+              {% else %}
+                <span class="badge badge-success">Compat: OK</span>
+              {% endif %}
+            </div>
           {% endif %}
         </td>
         <td>
@@ -71,11 +95,12 @@
           <a href="/jobs/{{ job.id }}/delete/" class="btn btn-error btn-sm" style="margin-left:6px" onclick="return confirm('Delete job #{{ job.id }}?')">✕</a>
         </td>
       </tr>
+      {% endwith %}
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-    <p class="hint" style="padding:20px">No jobs yet. <a href="/wizard/">Start a migration →</a></p>
+    <p class="hint" style="padding:20px">No jobs match this filter. <a href="/jobs/">Clear the filter</a> or <a href="/wizard/">start a migration →</a></p>
   {% endif %}
 </div>
 {% endblock %}

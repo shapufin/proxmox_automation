@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from django.contrib import messages
 from django.core.cache import cache as _django_cache
@@ -29,6 +30,12 @@ from .services import (
 
 _PROXMOX_STATUS_TTL = 30  # seconds
 _PROXMOX_STATUS_CACHE_KEY = "proxmox_status_v1"
+_COMPATIBILITY_FILTERS = {
+    "all": "All",
+    "issues": "Issues",
+    "blocked": "Blocked",
+    "warnings": "Warnings",
+}
 
 
 def _empty_inventory() -> dict[str, list[object]]:
@@ -79,6 +86,109 @@ def _config_form(profile_name: str = "") -> ConfigProfileForm:
     return form
 
 
+def _job_compatibility_report(job: MigrationJob) -> dict[str, Any]:
+    if not isinstance(job.result, dict):
+        return {}
+    details = job.result.get("details", {})
+    if not isinstance(details, dict):
+        return {}
+    report = details.get("compatibility", {})
+    return report if isinstance(report, dict) else {}
+
+
+def _compatibility_state(report: dict[str, Any]) -> str:
+    if not report:
+        return "none"
+    if report.get("blocking_issues"):
+        return "blocked"
+    if report.get("warnings"):
+        return "warnings"
+    return "ok"
+
+
+def _compatibility_state_label(state: str) -> str:
+    return {
+        "blocked": "Blocked",
+        "warnings": "Warnings",
+        "ok": "Compatible",
+        "none": "Not available",
+    }.get(state, "Not available")
+
+
+def _compatibility_state_badge(state: str) -> str:
+    return {
+        "blocked": "badge-error",
+        "warnings": "badge-warning",
+        "ok": "badge-success",
+        "none": "badge-muted",
+    }.get(state, "badge-muted")
+
+
+def _compatibility_context(job: MigrationJob) -> dict[str, Any]:
+    report = _job_compatibility_report(job)
+    state = _compatibility_state(report)
+    blocking_issues = list(report.get("blocking_issues") or [])
+    warnings = list(report.get("warnings") or [])
+    recommendations = list(report.get("recommendations") or [])
+    findings = list(report.get("findings") or [])
+    hardware = report.get("hardware") if isinstance(report.get("hardware"), dict) else {}
+    return {
+        "report": report,
+        "state": state,
+        "state_label": _compatibility_state_label(state),
+        "state_badge": _compatibility_state_badge(state),
+        "summary": report.get("summary", "") or ("Compatibility data not available" if state == "none" else ""),
+        "can_proceed": bool(report.get("can_proceed", state != "blocked")),
+        "blocking_issues": blocking_issues,
+        "warnings": warnings,
+        "recommendations": recommendations,
+        "findings": findings,
+        "hardware": hardware,
+        "blocking_count": len(blocking_issues),
+        "warning_count": len(warnings),
+        "recommendation_count": len(recommendations),
+    }
+
+
+def _filter_compatibility_jobs(
+    jobs: list[MigrationJob],
+    compatibility_filter: str,
+    *,
+    include_without_report: bool = True,
+) -> list[dict[str, Any]]:
+    selected = (compatibility_filter or "all").strip().lower()
+    if selected not in _COMPATIBILITY_FILTERS:
+        selected = "all"
+    filtered: list[dict[str, Any]] = []
+    for job in jobs:
+        context = _compatibility_context(job)
+        state = context["state"]
+        if not context["report"] and not include_without_report:
+            continue
+        if selected == "issues" and state not in {"blocked", "warnings"}:
+            continue
+        if selected == "blocked" and state != "blocked":
+            continue
+        if selected == "warnings" and state != "warnings":
+            continue
+        filtered.append({"job": job, "compatibility": context})
+    return filtered
+
+
+def _compatibility_filter_choices(selected: str) -> list[dict[str, str]]:
+    selected = (selected or "all").strip().lower()
+    if selected not in _COMPATIBILITY_FILTERS:
+        selected = "all"
+    return [
+        {
+            "value": key,
+            "label": label,
+            "selected": "true" if key == selected else "false",
+        }
+        for key, label in _COMPATIBILITY_FILTERS.items()
+    ]
+
+
 def _render_dashboard(
     request: HttpRequest,
     form: MigrationJobForm,
@@ -88,12 +198,20 @@ def _render_dashboard(
     storage_choices, bridge_choices = _proxmox_choice_items(inventory)
     form.set_storage_choices(storage_choices)
     form.set_bridge_choices(bridge_choices)
+    compatibility_filter = (request.GET.get("compatibility", "all") or "all").strip().lower()
+    jobs = list(MigrationJob.objects.all()[:20])
+    total_job_count = MigrationJob.objects.count()
+    compatibility_jobs = _filter_compatibility_jobs(jobs, compatibility_filter)
     return render(
         request,
         "dashboard/index.html",
         {
             "inventory": inventory,
-            "jobs": MigrationJob.objects.all()[:20],
+            "jobs": [item["job"] for item in compatibility_jobs],
+            "job_contexts": compatibility_jobs,
+            "job_count": total_job_count,
+            "compatibility_filter": compatibility_filter if compatibility_filter in _COMPATIBILITY_FILTERS else "all",
+            "compatibility_filter_choices": _compatibility_filter_choices(compatibility_filter),
             "form": form,
             "config_profiles": list_config_profiles(),
             "config_form": config_form or _config_form(),
@@ -272,13 +390,59 @@ def save_profile(request: HttpRequest) -> HttpResponse:
 
 
 def job_list(request: HttpRequest) -> HttpResponse:
-    jobs = MigrationJob.objects.all()[:100]
-    return render(request, "dashboard/job_list.html", {"jobs": jobs})
+    compatibility_filter = (request.GET.get("compatibility", "all") or "all").strip().lower()
+    jobs = list(MigrationJob.objects.all()[:100])
+    job_contexts = _filter_compatibility_jobs(jobs, compatibility_filter)
+    return render(
+        request,
+        "dashboard/job_list.html",
+        {
+            "jobs": [item["job"] for item in job_contexts],
+            "job_contexts": job_contexts,
+            "compatibility_filter": compatibility_filter if compatibility_filter in _COMPATIBILITY_FILTERS else "all",
+            "compatibility_filter_choices": _compatibility_filter_choices(compatibility_filter),
+        },
+    )
 
 
 def job_detail(request: HttpRequest, job_id: int) -> HttpResponse:
     job = get_object_or_404(MigrationJob, pk=job_id)
-    return render(request, "dashboard/job_detail.html", {"job": job})
+    compatibility = _compatibility_context(job)
+    return render(
+        request,
+        "dashboard/job_detail.html",
+        {
+            "job": job,
+            "compatibility": compatibility,
+        },
+    )
+
+
+@require_GET
+def compatibility_history(request: HttpRequest) -> HttpResponse:
+    compatibility_filter = (request.GET.get("compatibility", "issues") or "issues").strip().lower()
+    jobs = list(MigrationJob.objects.order_by("-created_at")[:200])
+    job_contexts = _filter_compatibility_jobs(jobs, compatibility_filter, include_without_report=False)
+    totals = {
+        "blocked": 0,
+        "warnings": 0,
+        "ok": 0,
+    }
+    for item in job_contexts:
+        state = item["compatibility"]["state"]
+        if state in totals:
+            totals[state] += 1
+    return render(
+        request,
+        "dashboard/compatibility_history.html",
+        {
+            "jobs": [item["job"] for item in job_contexts],
+            "job_contexts": job_contexts,
+            "compatibility_filter": compatibility_filter if compatibility_filter in _COMPATIBILITY_FILTERS else "issues",
+            "compatibility_filter_choices": _compatibility_filter_choices(compatibility_filter),
+            "totals": totals,
+        },
+    )
 
 
 @require_GET

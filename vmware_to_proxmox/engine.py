@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from .config import AppConfig
 from .disk import DiskConversionError, convert_disk, detect_archive_type, detect_disk_format, qemu_info, resize_disk, get_disk_size_gb, sha256_file
@@ -36,8 +36,9 @@ class MigrationPlan:
     disk_format: DiskFormat
     firmware: FirmwareMode
     warnings: list[str] = field(default_factory=list)
-    nics: list[dict[str, str]] = field(default_factory=list)
-    disks: list[dict[str, str]] = field(default_factory=list)
+    nics: list[dict[str, Any]] = field(default_factory=list)
+    disks: list[dict[str, Any]] = field(default_factory=list)
+    compatibility: dict[str, Any] = field(default_factory=dict)
 
 
 class MigrationEngine:
@@ -101,6 +102,212 @@ class MigrationEngine:
                 return str(mapping[text]).strip() or None
         return None
 
+    @staticmethod
+    def _disk_identity_keys(disk: Optional[VmwareDiskSpec], index: int, fallback_key: Optional[str] = None) -> list[str]:
+        keys: list[str] = []
+        if fallback_key:
+            keys.append(fallback_key)
+        if disk is None:
+            keys.extend([f"disk-{index}", f"scsi{index}", str(index)])
+            return keys
+        controller_key = getattr(disk, "controller_key", None)
+        unit_number = getattr(disk, "unit_number", None)
+        label = getattr(disk, "label", "")
+        file_name = getattr(disk, "file_name", "")
+        keys.extend(
+            [
+                getattr(disk, "path", "") if hasattr(disk, "path") else "",
+                file_name,
+                label,
+                f"controller-{controller_key}-{unit_number}" if controller_key is not None and unit_number is not None else "",
+                f"controller:{controller_key}:{unit_number}" if controller_key is not None and unit_number is not None else "",
+                f"disk-{index}",
+                f"scsi{index}",
+                str(index),
+            ]
+        )
+        # Keep ordering stable but drop empties and duplicates.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in keys:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                ordered.append(text)
+        return ordered
+
+    @staticmethod
+    def _nic_identity_keys(nic: Optional[VmwareNicSpec], index: int) -> list[str]:
+        keys: list[str] = []
+        if nic is None:
+            return [f"nic-{index}", str(index)]
+        keys.extend(
+            [
+                getattr(nic, "label", ""),
+                getattr(nic, "network_name", ""),
+                getattr(nic, "mac_address", ""),
+                getattr(nic, "adapter_type", ""),
+                f"nic-{index}",
+                str(index),
+            ]
+        )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in keys:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                ordered.append(text)
+        return ordered
+
+    def _build_compatibility_report(
+        self,
+        vm: VmwareVmSpec,
+        *,
+        source_mode: str,
+        target_storage: Optional[str],
+        target_bridge: Optional[str],
+        disk_format: Optional[DiskFormat],
+        allow_disk_shrink: bool = False,
+        fallback_nic_bridge: Optional[str] = None,
+    ) -> dict[str, Any]:
+        warnings: list[str] = []
+        blocking_issues: list[str] = []
+        recommendations: list[str] = []
+        findings: list[dict[str, Any]] = []
+
+        def add_finding(severity: str, category: str, message: str, recommendation: str = "") -> None:
+            findings.append({
+                "severity": severity,
+                "category": category,
+                "message": message,
+                "recommendation": recommendation,
+            })
+
+        add_finding("info", "source", f"Source mode: {source_mode}")
+        add_finding("info", "target", f"Target storage: {target_storage or 'auto'}")
+        add_finding("info", "target", f"Target bridge: {target_bridge or 'auto'}")
+        add_finding("info", "target", f"Target disk format: {disk_format.value if disk_format else 'auto'}")
+
+        if not vm.is_linux:
+            msg = f"VM '{vm.name}' is not identified as Linux (guestId={vm.guest_id!r})"
+            blocking_issues.append(msg)
+            recommendations.append("Use a Linux guest or migrate through a guest-aware Windows workflow")
+            add_finding("blocker", "guest_os", msg, "Use a Linux guest or migrate through a guest-aware Windows workflow")
+
+        if vm.power_state.lower() not in {"poweredoff", "powered_off", "off"}:
+            msg = f"VM '{vm.name}' must be powered off before migration"
+            blocking_issues.append(msg)
+            recommendations.append("Power off the VM cleanly before migration")
+            add_finding("blocker", "power_state", msg, "Power off the VM cleanly before migration")
+
+        if vm.has_snapshots:
+            snapshot_note = f"VM '{vm.name}' has {vm.snapshot_count or 'one or more'} snapshot(s)"
+            warnings.append(snapshot_note)
+            recommendations.append("Consolidate or remove snapshots before migration")
+            msg = f"VM '{vm.name}' still has snapshots; consolidate or remove them first"
+            blocking_issues.append(msg)
+            add_finding("blocker", "snapshot", msg, "Consolidate or remove snapshots before migration")
+            if vm.snapshot_count:
+                add_finding(
+                    "warning",
+                    "snapshot",
+                    f"Snapshot count detected: {vm.snapshot_count}",
+                    "Review snapshot chain depth and consolidation time",
+                )
+
+        if vm.has_vtpm:
+            msg = "vTPM detected; Proxmox cannot migrate vTPM state from VMware"
+            warnings.append(msg)
+            recommendations.append("Plan to recreate or re-enroll trusted platform features in Proxmox")
+            add_finding("warning", "security", msg, "Plan to recreate or re-enroll trusted platform features in Proxmox")
+
+        if vm.has_pci_passthrough:
+            msg = "PCI passthrough detected; manual reconfiguration may be required"
+            warnings.append(msg)
+            recommendations.append("Document passthrough devices and recreate them manually on the Proxmox side")
+            add_finding("warning", "passthrough", msg, "Document passthrough devices and recreate them manually on the Proxmox side")
+
+        if not vm.disks:
+            msg = f"VM '{vm.name}' has no virtual disks"
+            blocking_issues.append(msg)
+            recommendations.append("Validate the source inventory or manifest before migrating")
+            add_finding("blocker", "disk_inventory", msg, "Validate the source inventory or manifest before migrating")
+
+        if not vm.nics:
+            msg = "No NICs were discovered from VMware; a fallback bridge will be used if configured"
+            warnings.append(msg)
+            if fallback_nic_bridge:
+                recommendations.append(f"Fallback bridge '{fallback_nic_bridge}' will be used for the first virtual NIC")
+            else:
+                recommendations.append("Configure a fallback NIC bridge to avoid target bridge ambiguity")
+            add_finding("warning", "network", msg, "Configure a fallback NIC bridge to avoid target bridge ambiguity")
+
+        if vm.hardware_version:
+            add_finding("info", "hardware_version", f"VMware hardware version: {vm.hardware_version}")
+
+        # Controller/layout fidelity checks.
+        controller_keys = [disk.controller_key for disk in vm.disks if getattr(disk, "controller_key", None) is not None]
+        if vm.disks and not controller_keys:
+            msg = "Disk controller metadata is missing; migration will rely on disk order rather than controller topology"
+            warnings.append(msg)
+            recommendations.append("Export full VMware hardware metadata to preserve controller relationships")
+            add_finding("warning", "controller_layout", msg, "Export full VMware hardware metadata to preserve controller relationships")
+        else:
+            unit_numbers = [disk.unit_number for disk in vm.disks if getattr(disk, "unit_number", None) is not None]
+            if unit_numbers and len(set(controller_keys)) > 1:
+                add_finding(
+                    "info",
+                    "controller_layout",
+                    f"Multiple SCSI controllers detected: {sorted(set(str(item) for item in controller_keys))}",
+                    "Ensure the target Proxmox SCSI controller configuration matches the source layout",
+                )
+            if any(getattr(disk, "unit_number", None) is None for disk in vm.disks):
+                msg = "One or more disks are missing unit number metadata"
+                warnings.append(msg)
+                recommendations.append("Populate disk unit numbers to improve deterministic attachment ordering")
+                add_finding("warning", "controller_layout", msg, "Populate disk unit numbers to improve deterministic attachment ordering")
+
+        adapter_types = {nic.adapter_type for nic in vm.nics if getattr(nic, "adapter_type", "")}
+        if len(adapter_types) > 1:
+            add_finding(
+                "warning",
+                "network_adapter",
+                f"Mixed NIC adapter types detected: {sorted(adapter_types)}",
+                "Review whether virtio-only mapping is acceptable for this VM",
+            )
+
+        # Derived summary.
+        can_proceed = not blocking_issues
+        summary = "Compatible with warnings" if warnings and can_proceed else ("Blocked" if blocking_issues else "Compatible")
+        return {
+            "vm_name": vm.name,
+            "vmware_hardware_version": vm.hardware_version,
+            "source_mode": source_mode,
+            "target_storage": target_storage,
+            "target_bridge": target_bridge,
+            "target_disk_format": disk_format.value if disk_format else None,
+            "can_proceed": can_proceed,
+            "summary": summary,
+            "blocking_issues": blocking_issues,
+            "warnings": warnings,
+            "recommendations": recommendations,
+            "findings": findings,
+            "hardware": {
+                "guest_id": vm.guest_id,
+                "power_state": vm.power_state,
+                "memory_mb": vm.memory_mb,
+                "cpu_count": vm.cpu_count,
+                "snapshot_count": vm.snapshot_count,
+                "has_snapshots": vm.has_snapshots,
+                "has_vtpm": vm.has_vtpm,
+                "has_pci_passthrough": vm.has_pci_passthrough,
+                "disk_count": len(vm.disks),
+                "nic_count": len(vm.nics),
+                "adapter_types": sorted(adapter_types),
+            },
+        }
+
     def _resolve_disk_storage(
         self,
         disk: Optional[VmwareDiskSpec],
@@ -109,15 +316,7 @@ class MigrationEngine:
         disk_storage_map: Optional[dict[str, str]] = None,
     ) -> str:
         datastore = getattr(disk, "datastore", "") if disk is not None else ""
-        mapped = self._map_lookup(
-            disk_storage_map,
-            getattr(disk, "path", "") if disk is not None else "",
-            getattr(disk, "file_name", "") if disk is not None else "",
-            getattr(disk, "label", "") if disk is not None else "",
-            f"disk-{index}",
-            f"scsi{index}",
-            datastore,
-        )
+        mapped = self._map_lookup(disk_storage_map, *self._disk_identity_keys(disk, index, datastore))
         preferred = mapped or storage_override or (self.config.storage_for_datastore(datastore) if datastore else None)
         return self._resolve_storage(preferred)
 
@@ -134,13 +333,7 @@ class MigrationEngine:
         nic_bridge_map: Optional[dict[str, str]] = None,
     ) -> str:
         network_name = getattr(nic, "network_name", "") if nic is not None else ""
-        mapped = self._map_lookup(
-            nic_bridge_map,
-            getattr(nic, "label", "") if nic is not None else "",
-            network_name,
-            f"nic-{index}",
-            str(index),
-        )
+        mapped = self._map_lookup(nic_bridge_map, *self._nic_identity_keys(nic, index))
         return self._resolve_bridge(mapped or bridge_override or self.config.bridge_for_network(network_name))
 
     def _resolve_fallback_nic_bridge(self, bridge_override: Optional[str] = None) -> str:
@@ -151,6 +344,8 @@ class MigrationEngine:
     def _resolve_disk_resize(
         disk_key: str,
         disk_resize_map: Optional[dict[str, int]] = None,
+        disk: Optional[VmwareDiskSpec] = None,
+        index: Optional[int] = None,
     ) -> Optional[int]:
         """Look up a target resize size (in GB) for a disk from the resize map.
 
@@ -159,15 +354,35 @@ class MigrationEngine:
         """
         if not disk_resize_map:
             return None
-        # Try exact match
-        if disk_key in disk_resize_map:
-            val = disk_resize_map[disk_key]
-            if val and int(val) > 0:
-                return int(val)
-        # Try filename-only match (basename)
-        from pathlib import Path
+        candidates: list[str] = [disk_key]
+        if index is not None:
+            candidates.extend([f"disk-{index}", f"scsi{index}", str(index)])
+        if disk is not None:
+            controller_key = getattr(disk, "controller_key", None)
+            unit_number = getattr(disk, "unit_number", None)
+            candidates.extend(
+                [
+                    getattr(disk, "file_name", ""),
+                    getattr(disk, "label", ""),
+                    f"controller-{controller_key}-{unit_number}" if controller_key is not None and unit_number is not None else "",
+                    f"controller:{controller_key}:{unit_number}" if controller_key is not None and unit_number is not None else "",
+                ]
+            )
+        # Try exact and basename matches
+        candidates.append(Path(disk_key).name)
+        seen: set[str] = set()
+        for candidate in candidates:
+            text = str(candidate).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            if text in disk_resize_map:
+                val = disk_resize_map[text]
+                if val and int(val) > 0:
+                    return int(val)
+        # Basename fallback for path-like keys
         basename = Path(disk_key).name
-        if basename in disk_resize_map and basename != disk_key:
+        if basename in disk_resize_map:
             val = disk_resize_map[basename]
             if val and int(val) > 0:
                 return int(val)
@@ -189,8 +404,15 @@ class MigrationEngine:
         self.proxmox.ensure_prerequisites()
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
-            warnings = self.vmware.validate_supported(vm)
-        return self._plan_from_vm(vm, warnings, storage, bridge, disk_format)
+        compatibility = self._build_compatibility_report(
+            vm,
+            source_mode="vmware",
+            target_storage=storage,
+            target_bridge=bridge,
+            disk_format=disk_format,
+        )
+        warnings = list(dict.fromkeys((compatibility.get("warnings") or []) + (compatibility.get("recommendations") or [])))
+        return self._plan_from_vm(vm, warnings, storage, bridge, disk_format, compatibility=compatibility)
 
     @staticmethod
     def _minimal_vm_spec(name: str, vmx_specs: Optional[dict] = None) -> VmwareVmSpec:
@@ -323,7 +545,15 @@ class MigrationEngine:
     def load_local_manifest(self, manifest_path: Optional[Path]) -> VmwareVmSpec:
         return self._vm_from_manifest(manifest_path)
 
-    def _plan_from_vm(self, vm: VmwareVmSpec, warnings: list[str], storage: Optional[str], bridge: Optional[str], disk_format: Optional[DiskFormat]) -> MigrationPlan:
+    def _plan_from_vm(
+        self,
+        vm: VmwareVmSpec,
+        warnings: list[str],
+        storage: Optional[str],
+        bridge: Optional[str],
+        disk_format: Optional[DiskFormat],
+        compatibility: Optional[dict[str, Any]] = None,
+    ) -> MigrationPlan:
         target_storage = self._resolve_storage(storage)
         target_bridge = bridge or (self.config.bridge_for_network(vm.nics[0].network_name) if vm.nics else self.config.proxmox.default_bridge)
         target_bridge = self._resolve_bridge(target_bridge)
@@ -339,6 +569,8 @@ class MigrationEngine:
                     "source_network": nic.network_name,
                     "target_bridge": self._resolve_network_bridge(nic.network_name, bridge),
                     "mac": nic.mac_address if self.config.proxmox.preserve_mac else "generated",
+                    "adapter_type": nic.adapter_type,
+                    "nic_keys": self._nic_identity_keys(nic, vm.nics.index(nic)),
                 }
             )
 
@@ -356,6 +588,9 @@ class MigrationEngine:
                     "capacity_bytes": str(disk.capacity_bytes),
                     "target_storage": disk_storage,
                     "source_datastore": datastore,
+                    "controller_key": disk.controller_key,
+                    "unit_number": disk.unit_number,
+                    "disk_keys": self._disk_identity_keys(disk, vm.disks.index(disk), datastore),
                 }
             )
 
@@ -369,7 +604,18 @@ class MigrationEngine:
             warnings=warnings,
             nics=nics,
             disks=disks,
+            compatibility=compatibility or {},
         )
+
+    @staticmethod
+    def _compatibility_summary_message(report: dict[str, Any]) -> str:
+        blocking = report.get("blocking_issues") or []
+        warnings = report.get("warnings") or []
+        if blocking:
+            return "; ".join(str(item) for item in blocking)
+        if warnings:
+            return "; ".join(str(item) for item in warnings)
+        return ""
 
     def _collect_remote_local_disk_paths(
         self,
@@ -510,6 +756,7 @@ class MigrationEngine:
         disk_resize_map: Optional[dict[str, int]] = None,
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
+        compatibility: Optional[dict[str, Any]] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -517,7 +764,16 @@ class MigrationEngine:
         vm = self._vm_from_manifest(manifest_path, vmx_specs=vmx_specs, fallback_name=vm_name)
         if vm_name and vm.name != vm_name:
             vm.name = vm_name
-        warnings = self.vmware.validate_supported(vm)
+        compatibility = self._build_compatibility_report(
+            vm,
+            source_mode="local",
+            target_storage=storage,
+            target_bridge=bridge,
+            disk_format=disk_format,
+            allow_disk_shrink=allow_disk_shrink,
+            fallback_nic_bridge=fallback_nic_bridge,
+        )
+        warnings = list(dict.fromkeys((compatibility.get("warnings") or []) + (compatibility.get("recommendations") or [])))
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
@@ -562,8 +818,12 @@ class MigrationEngine:
                     "source_mode": "local",
                     "disk_count": len(source_paths),
                     "path_resolution": path_diagnostics,
+                    "compatibility": compatibility,
                 },
             )
+
+        if compatibility.get("blocking_issues"):
+            raise VmwareClientError(self._compatibility_summary_message(compatibility))
 
         if not source_paths:
             raise ValueError(
@@ -740,12 +1000,11 @@ class MigrationEngine:
                 warnings=warnings,
                 details={
                     "source_mode": "local",
-                    "manifest": str(manifest_path),
-                    "staging_dir": str(target_dir),
-                    "remediation_script": str(remediation_path),
+                    "disk_count": len(source_paths),
                     "path_resolution": path_diagnostics,
                     "migration_commands": migration_commands,
                     "disks": [asdict(item) for item in import_records],
+                    "compatibility": compatibility,
                 },
             )
         except Exception:
@@ -778,7 +1037,18 @@ class MigrationEngine:
         with self.vmware:
             vm = self.vmware.get_vm_by_name(vm_name)
             vm = self._apply_vmx_specs(vm, vmx_specs)
-            warnings = self.vmware.validate_supported(vm)
+        compatibility = self._build_compatibility_report(
+            vm,
+            source_mode="vmware",
+            target_storage=storage,
+            target_bridge=bridge,
+            disk_format=disk_format,
+            allow_disk_shrink=allow_disk_shrink,
+            fallback_nic_bridge=fallback_nic_bridge,
+        )
+        if compatibility.get("blocking_issues"):
+            raise VmwareClientError(self._compatibility_summary_message(compatibility))
+        warnings = list(dict.fromkeys((compatibility.get("warnings") or []) + (compatibility.get("recommendations") or [])))
         return self._migrate_vmware(
             vm,
             warnings,
@@ -794,6 +1064,7 @@ class MigrationEngine:
             disk_resize_map=disk_resize_map,
             allow_disk_shrink=allow_disk_shrink,
             fallback_nic_bridge=fallback_nic_bridge,
+            compatibility=compatibility,
         )
 
     def _migrate_vmware(
@@ -812,6 +1083,7 @@ class MigrationEngine:
         disk_resize_map: Optional[dict[str, int]] = None,
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
+        compatibility: Optional[dict[str, Any]] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
@@ -827,7 +1099,7 @@ class MigrationEngine:
                 disk_format=target_format,
                 firmware=firmware,
                 warnings=warnings,
-                details={"dry_run": True, "source_mode": "vmware"},
+                details={"dry_run": True, "source_mode": "vmware", "compatibility": compatibility or {}},
             )
 
         target_dir = Path(tempfile.mkdtemp(prefix=f"pve-migrate-{vm.name}-"))
@@ -979,6 +1251,7 @@ class MigrationEngine:
                     "remediation_script": str(remediation_path),
                     "migration_commands": migration_commands,
                     "disks": [asdict(item) for item in import_records],
+                    "compatibility": compatibility or {},
                 },
             )
         except Exception:

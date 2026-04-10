@@ -121,6 +121,8 @@ class VmwareClient:
         guest_id = getattr(config, "guestId", "") or ""
         power_state = str(getattr(vm.runtime, "powerState", "poweredOff")).split(".")[-1]
         snapshot_root = getattr(vm, "snapshot", None)
+        hardware_version = str(getattr(config, "version", "") or "")
+        snapshot_count = len(snapshot_root.rootSnapshotList) if snapshot_root and getattr(snapshot_root, "rootSnapshotList", None) else 0
 
         return VmwareVmSpec(
             name=vm.name,
@@ -130,11 +132,13 @@ class VmwareClient:
             firmware=firmware,
             memory_mb=int(getattr(config.hardware, "memoryMB", 0) or 0),
             cpu_count=int(getattr(config.hardware, "numCPU", 1) or 1),
+            hardware_version=hardware_version,
             annotation=str(getattr(config, "annotation", "") or ""),
             datastore=str(getattr(config.files, "vmPathName", "") or ""),
             disks=disks,
             nics=nics,
             has_snapshots=bool(snapshot_root),
+            snapshot_count=snapshot_count,
             has_vtpm=has_vtpm,
             has_pci_passthrough=has_pci_passthrough,
         )

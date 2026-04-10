@@ -614,14 +614,14 @@ function buildPerDiskRows(storages) {
     resizeInput.type = 'number';
     resizeInput.className = 'form-input';
     resizeInput.style.flex = '1';
-    resizeInput.min = sourceGb || 1;
+    resizeInput.min = 1;
     resizeInput.placeholder = sourceGb ? `≥${sourceGb} GB` : 'Size GB';
     if (state.disk_resize_map[key]) {
       resizeInput.value = state.disk_resize_map[key];
     }
     resizeInput.addEventListener('input', () => {
       const val = parseInt(resizeInput.value, 10);
-      if (val && val >= (sourceGb || 1)) {
+      if (val && val > 0) {
         state.disk_resize_map[key] = val;
       } else {
         delete state.disk_resize_map[key];
@@ -881,8 +881,6 @@ function applyVmxSpecs(specs) {
   // Store full vmx_specs in state to send to server
   state.vmx_specs = specs || {};
   state.vmx_disk_specs = specs.disks || [];
-  state.disk_storage_map = {};
-  state.nic_bridge_map = {};
 
   // Job name — only pre-fill if blank
   if (specs.name && !state.name) {

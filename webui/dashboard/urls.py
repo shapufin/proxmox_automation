@@ -14,6 +14,7 @@ urlpatterns = [
     path("configs/", views.config_profile_editor, name="config_profiles"),
     path("configs/save/", views.save_profile, name="save_profile"),
     path("jobs/", views.job_list, name="job_list"),
+    path("jobs/compatibility/", views.compatibility_history, name="compatibility_history"),
     path("jobs/<int:job_id>/", views.job_detail, name="job_detail"),
     path("jobs/<int:job_id>/run/", views.run_pending_job, name="run_pending_job"),
     path("jobs/<int:job_id>/delete/", views.delete_job, name="delete_job"),
