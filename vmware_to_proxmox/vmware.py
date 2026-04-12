@@ -86,52 +86,66 @@ class VmwareClient:
         scsi_controller_type = ""
 
         for device in hardware.device:
-            if isinstance(device, vim.vm.device.VirtualDisk):
-                backing = device.backing
-                file_name = getattr(backing, "fileName", "") or ""
-                label = getattr(device.deviceInfo, "label", f"disk{len(disks)}")
-                
-                # Extract datastore from file name (e.g., "[datastore1] folder/vm.vmdk")
-                datastore = ""
-                if file_name.startswith("[") and "]" in file_name:
-                    datastore, _, _ = file_name[1:].partition("]")
-                    datastore = datastore.strip()
-                
-                # Extract backing mode (persistent, independent-persistent, etc.)
-                backing_mode = getattr(backing, "diskMode", "persistent") if hasattr(backing, "diskMode") else "persistent"
-                if isinstance(backing_mode, str):
-                    backing_mode = backing_mode.lower()
-                
-                # Extract device type
-                device_type = backing.__class__.__name__
-                
-                # Detect RDM devices (Raw Device Mapping)
-                is_rdm = "rdm" in device_type.lower() or backing_mode.startswith("independent")
-                
-                # Set backing_type based on RDM detection
-                backing_type = "rdm" if is_rdm else "file"
-                
-                # Extract LUN ID for RDM devices
-                lun_id = None
-                if is_rdm and hasattr(backing, "lunNumber"):
-                    lun_id = int(backing.lunNumber) if backing.lunNumber else None
-                
-                disks.append(
-                    VmwareDiskSpec(
-                        label=label,
-                        file_name=file_name,
-                        capacity_bytes=int(getattr(device, "capacityInBytes", 0) or 0),
-                        backing_type=backing_type,
-                        controller_key=getattr(device, "controllerKey", None),
-                        unit_number=getattr(device, "unitNumber", None),
-                        thin_provisioned=bool(getattr(backing, "thinProvisioned", False)),
-                        datastore=datastore,
-                        backing_mode=backing_mode,
-                        device_type=device_type,
-                        lun_id=lun_id,
-                        is_rdm=is_rdm,
+            try:
+                if isinstance(device, vim.vm.device.VirtualDisk):
+                    backing = device.backing
+                    if backing is None:
+                        label = getattr(device.deviceInfo, "label", "unknown") if hasattr(device, "deviceInfo") else "unknown"
+                        self.logger.warning(f"Disk {label} has no backing, skipping")
+                        continue
+                    
+                    file_name = getattr(backing, "fileName", "") or ""
+                    if not file_name:
+                        label = getattr(device.deviceInfo, "label", "unknown") if hasattr(device, "deviceInfo") else "unknown"
+                        self.logger.warning(f"Disk {label} has no fileName, skipping")
+                        continue
+                    
+                    label = getattr(device.deviceInfo, "label", f"disk{len(disks)}")
+                    
+                    # Extract datastore from file name (e.g., "[datastore1] folder/vm.vmdk")
+                    datastore = ""
+                    if file_name.startswith("[") and "]" in file_name:
+                        datastore, _, _ = file_name[1:].partition("]")
+                        datastore = datastore.strip()
+                    
+                    # Extract backing mode (persistent, independent-persistent, etc.)
+                    backing_mode = getattr(backing, "diskMode", "persistent") if hasattr(backing, "diskMode") else "persistent"
+                    if isinstance(backing_mode, str):
+                        backing_mode = backing_mode.lower()
+                    
+                    # Extract device type
+                    device_type = backing.__class__.__name__
+                    
+                    # Detect RDM devices (Raw Device Mapping)
+                    is_rdm = "rdm" in device_type.lower() or backing_mode.startswith("independent")
+                    
+                    # Set backing_type based on RDM detection
+                    backing_type = "rdm" if is_rdm else "file"
+                    
+                    # Extract LUN ID for RDM devices
+                    lun_id = None
+                    if is_rdm and hasattr(backing, "lunNumber"):
+                        lun_id = int(backing.lunNumber) if backing.lunNumber else None
+                    
+                    disks.append(
+                        VmwareDiskSpec(
+                            label=label,
+                            file_name=file_name,
+                            capacity_bytes=int(getattr(device, "capacityInBytes", 0) or 0),
+                            backing_type=backing_type,
+                            controller_key=getattr(device, "controllerKey", None),
+                            unit_number=getattr(device, "unitNumber", None),
+                            thin_provisioned=bool(getattr(backing, "thinProvisioned", False)),
+                            datastore=datastore,
+                            backing_mode=backing_mode,
+                            device_type=device_type,
+                            lun_id=lun_id,
+                            is_rdm=is_rdm,
+                        )
                     )
-                )
+            except Exception as e:
+                self.logger.error(f"Error processing device {device.__class__.__name__}: {e}", exc_info=True)
+                continue
             elif isinstance(device, vim.vm.device.VirtualEthernetCard):
                 label = getattr(device.deviceInfo, "label", f"nic{len(nics)}")
                 backing = getattr(device, "backing", None)
