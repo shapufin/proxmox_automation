@@ -39,6 +39,7 @@ class VmwareNicSpec:
     mac_address: str
     adapter_type: str
     vlan_id: Optional[int] = None
+    virtual_dev: str = ""
 
 
 @dataclass(slots=True)
@@ -105,6 +106,11 @@ class MigrationTarget:
 class MigrationResult:
     name: str
     vmid: int
+    target_storage: str
+    disk_format: DiskFormat
+    firmware: FirmwareMode
+    warnings: list[str] = field(default_factory=list)
+    details: dict[str, Any] = field(default_factory=dict)
     target_storage: str
     disk_format: DiskFormat
     firmware: FirmwareMode

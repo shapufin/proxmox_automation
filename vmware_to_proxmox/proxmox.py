@@ -497,6 +497,8 @@ class ProxmoxClient:
         scsihw: str = "virtio-scsi-single",
         agent: bool = True,
         onboot: bool = False,
+        hotplug_cpu: bool = False,
+        hotplug_memory: bool = False,
     ) -> str:
         safe_name = _sanitize_vm_name(name, fallback=f"vm-{vmid}")
         args = [
@@ -524,6 +526,10 @@ class ProxmoxClient:
             args.extend(["--bios", "ovmf"])
         if agent:
             args.extend(["--agent", "enabled=1"])
+        if hotplug_cpu:
+            args.extend(["--hotplug", "cpu"])
+        if hotplug_memory:
+            args.extend(["--hotplug", "memory"])
         self._run(args)
         return safe_name
 

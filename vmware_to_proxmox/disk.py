@@ -51,10 +51,14 @@ def parse_vmx(content: str) -> dict[str, object]:
         memory_mb     (int)  — memsize in MB
         cpu_count     (int)  — numvcpus
         guest_os      (str)  — guestOS value
+        guest_os_full_name (str) — guestFullName if available
         firmware      (str)  — 'efi' or 'bios'
         disk_files    (list[str])  — all *.vmdk references in disk order
         scsi_type     (str)  — e.g. 'lsilogic', 'pvscsi'
-        networks      (list[dict]) — [{adapter, network_name, mac}]
+        networks      (list[dict]) — [{adapter, network_name, mac, virtual_dev}]
+        cpu_hotplug_enabled (bool) — vcpu.hotadd setting
+        memory_hotplug_enabled (bool) — mem.hotadd setting
+        annotation    (str) — annotation/description
         raw           (dict[str, str])  — every parsed key=value pair
     """
     raw: dict[str, str] = {}
@@ -71,6 +75,7 @@ def parse_vmx(content: str) -> dict[str, object]:
     cpu_count = int(raw.get("numvcpus", 1) or 1)
     name = raw.get("displayname", "")
     guest_os = raw.get("guestos", "")
+    guest_os_full_name = raw.get("guestfullname", guest_os)
 
     firmware_raw = raw.get("firmware", "bios").lower()
     firmware = "efi" if firmware_raw in {"efi", "uefi"} else "bios"
@@ -108,22 +113,34 @@ def parse_vmx(content: str) -> dict[str, object]:
         m = re.match(r'^ethernet(\d+)\.networkname$', key, re.IGNORECASE)
         if m:
             idx = m.group(1)
-            adapter = raw.get(f"ethernet{idx}.virtualdev", "vmxnet3")
+            virtual_dev = raw.get(f"ethernet{idx}.virtualdev", "vmxnet3")
+            adapter = virtual_dev  # Use virtual_dev as the adapter type
             mac = raw.get(f"ethernet{idx}.address", raw.get(f"ethernet{idx}.generatedaddress", ""))
-            networks.append({"index": idx, "network_name": val, "adapter": adapter, "mac": mac})
+            networks.append({"index": idx, "network_name": val, "adapter": adapter, "mac": mac, "virtual_dev": virtual_dev})
     networks.sort(key=lambda n: int(n["index"]))
+
+    # Hotplug settings
+    cpu_hotplug_enabled = raw.get("vcpu.hotadd", "false").lower() == "true"
+    memory_hotplug_enabled = raw.get("mem.hotadd", "false").lower() == "true"
+
+    # Annotation
+    annotation = raw.get("annotation", "")
 
     return {
         "name": name,
         "memory_mb": memory_mb,
         "cpu_count": cpu_count,
         "guest_os": guest_os,
+        "guest_os_full_name": guest_os_full_name,
         "firmware": firmware,
         "memory_gb": round(memory_mb / 1024, 2) if memory_mb else 0,
         "disk_files": disk_files,
         "disks": [item[1] for item in disk_entries],
         "scsi_type": scsi_type,
         "networks": networks,
+        "cpu_hotplug_enabled": cpu_hotplug_enabled,
+        "memory_hotplug_enabled": memory_hotplug_enabled,
+        "annotation": annotation,
         "raw": raw,
     }
 

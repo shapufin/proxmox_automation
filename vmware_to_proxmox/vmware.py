@@ -83,6 +83,7 @@ class VmwareClient:
         nics: list[VmwareNicSpec] = []
         has_vtpm = False
         has_pci_passthrough = False
+        scsi_controller_type = ""
 
         for device in hardware.device:
             if isinstance(device, vim.vm.device.VirtualDisk):
@@ -103,6 +104,11 @@ class VmwareClient:
             elif isinstance(device, vim.vm.device.VirtualEthernetCard):
                 label = getattr(device.deviceInfo, "label", f"nic{len(nics)}")
                 backing = getattr(device, "backing", None)
+                # Extract virtualDev (e.g., vmxnet3, e1000) instead of just class name
+                virtual_dev = getattr(device, "virtualDev", "") or ""
+                if not virtual_dev:
+                    # Fallback to class name if virtualDev not available
+                    virtual_dev = device.__class__.__name__.lower().replace("virtual", "").lower()
                 nics.append(
                     VmwareNicSpec(
                         label=label,
@@ -110,8 +116,13 @@ class VmwareClient:
                         mac_address=getattr(device, "macAddress", ""),
                         adapter_type=device.__class__.__name__,
                         vlan_id=None,
+                        virtual_dev=virtual_dev,
                     )
                 )
+            elif isinstance(device, vim.vm.device.VirtualSCSIController):
+                # Extract SCSI controller type (e.g., pvscsi, lsilogic, lsisas1068)
+                if not scsi_controller_type:
+                    scsi_controller_type = getattr(device, "virtualDev", "") or ""
             elif isinstance(device, vim.vm.device.VirtualTPM):
                 has_vtpm = True
             elif isinstance(device, vim.vm.device.VirtualPCIPassthrough):
@@ -119,10 +130,15 @@ class VmwareClient:
 
         firmware = getattr(config, "firmware", "bios") or "bios"
         guest_id = getattr(config, "guestId", "") or ""
+        guest_os_full_name = getattr(config, "guestFullName", "") or guest_id
         power_state = str(getattr(vm.runtime, "powerState", "poweredOff")).split(".")[-1]
         snapshot_root = getattr(vm, "snapshot", None)
         hardware_version = str(getattr(config, "version", "") or "")
         snapshot_count = len(snapshot_root.rootSnapshotList) if snapshot_root and getattr(snapshot_root, "rootSnapshotList", None) else 0
+
+        # Extract hotplug settings
+        cpu_hotplug_enabled = bool(getattr(config, "cpuHotAddEnabled", False))
+        memory_hotplug_enabled = bool(getattr(config, "memoryHotAddEnabled", False))
 
         return VmwareVmSpec(
             name=vm.name,
@@ -141,6 +157,10 @@ class VmwareClient:
             snapshot_count=snapshot_count,
             has_vtpm=has_vtpm,
             has_pci_passthrough=has_pci_passthrough,
+            cpu_hotplug_enabled=cpu_hotplug_enabled,
+            memory_hotplug_enabled=memory_hotplug_enabled,
+            scsi_controller_type=scsi_controller_type,
+            guest_os_full_name=guest_os_full_name,
         )
 
     def validate_supported(self, vm: VmwareVmSpec) -> list[str]:

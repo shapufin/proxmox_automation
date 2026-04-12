@@ -72,6 +72,64 @@ class MigrationEngine:
         self.remediator = GuestRemediator()
 
     @staticmethod
+    def _map_guest_os_to_ostype(guest_os: str, guest_os_full_name: str = "") -> str:
+        """Map VMware guest OS identifier to Proxmox ostype."""
+        guest_lower = (guest_os_full_name or guest_os).lower()
+        
+        # Windows mapping
+        if "windows11" in guest_lower or "win11" in guest_lower:
+            return "win11"
+        if "windows10" in guest_lower or "win10" in guest_lower:
+            return "win10"
+        if "windows2019" in guest_lower or "win2019" in guest_lower or "server2019" in guest_lower:
+            return "win2019"
+        if "windows2016" in guest_lower or "win2016" in guest_lower or "server2016" in guest_lower:
+            return "win2016"
+        if "windows2012" in guest_lower or "win2012" in guest_lower or "server2012" in guest_lower:
+            return "win2012"
+        if "windows8" in guest_lower or "win8" in guest_lower:
+            return "win8"
+        if "windows7" in guest_lower or "win7" in guest_lower:
+            return "win7"
+        
+        # Linux and others default to l26 (Linux kernel 2.6+)
+        return "l26"
+
+    @staticmethod
+    def _map_scsi_to_proxmox(vmware_scsi: str) -> str:
+        """Map VMware SCSI controller type to Proxmox scsihw."""
+        scsi_lower = vmware_scsi.lower()
+        
+        # Direct mappings
+        if scsi_lower == "pvscsi":
+            return "pvscsi"
+        if scsi_lower == "lsilogic":
+            return "lsi"
+        if scsi_lower == "lsisas1068":
+            return "mptsas1068"
+        if scsi_lower == "buslogic":
+            return "buslogic"
+        
+        # Default to modern virtio-scsi-single for unknown types
+        return "virtio-scsi-single"
+
+    @staticmethod
+    def _map_nic_model(vmware_model: str) -> str:
+        """Map VMware NIC virtualDev to Proxmox model."""
+        model_lower = vmware_model.lower()
+        
+        # Direct mappings
+        if model_lower == "vmxnet3":
+            return "vmxnet3"
+        if model_lower in ("e1000e", "e1000"):
+            return "e1000"
+        if model_lower == "vlance":
+            return "rtl8139"
+        
+        # Default to virtio for best performance on Linux
+        return "virtio"
+
+    @staticmethod
     def _default_migration_ledger() -> dict[str, Any]:
         return {
             "schema_version": 1,
@@ -928,6 +986,7 @@ class MigrationEngine:
                     mac_address=str(net.get("mac", "")),
                     network_name=str(net.get("network_name", "VM Network")),
                     adapter_type=str(net.get("adapter", "vmxnet3")),
+                    virtual_dev=str(net.get("virtual_dev", net.get("adapter", "vmxnet3"))),
                 )
                 for net in specs.get("networks", [])
                 if isinstance(net, dict)
@@ -946,6 +1005,38 @@ class MigrationEngine:
                 for idx, disk in enumerate(specs.get("disks", []))
                 if isinstance(disk, dict)
             ]
+        
+        # Apply vmx_overrides (user-specified advanced specs from wizard)
+        overrides = specs.get("vmx_overrides", {})
+        if isinstance(overrides, dict):
+            # Hardware overrides
+            if overrides.get("memory_mb"):
+                vm.memory_mb = int(overrides["memory_mb"])
+            if overrides.get("cpu_count"):
+                vm.cpu_count = int(overrides["cpu_count"])
+            if overrides.get("firmware"):
+                vm.firmware = overrides["firmware"]
+            if overrides.get("guest_os"):
+                vm.guest_id = overrides["guest_os"]
+            
+            # Advanced spec overrides
+            if overrides.get("cpu_hotplug_enabled") is not None:
+                vm.cpu_hotplug_enabled = bool(overrides["cpu_hotplug_enabled"])
+            if overrides.get("memory_hotplug_enabled") is not None:
+                vm.memory_hotplug_enabled = bool(overrides["memory_hotplug_enabled"])
+            if overrides.get("scsi_controller_type"):
+                vm.scsi_controller_type = overrides["scsi_controller_type"]
+            if overrides.get("guest_os_full_name"):
+                vm.guest_os_full_name = overrides["guest_os_full_name"]
+            if overrides.get("description"):
+                vm.annotation = overrides["description"]
+            
+            # Apply NIC model override if specified
+            if overrides.get("nic_model_default"):
+                for nic in vm.nics:
+                    if not nic.virtual_dev:
+                        nic.virtual_dev = overrides["nic_model_default"]
+        
         return vm
 
     def load_local_manifest(self, manifest_path: Optional[Path]) -> VmwareVmSpec:
@@ -1297,6 +1388,13 @@ class MigrationEngine:
                 self.logger.info("Reusing previously created VM %s (VMID %s)", proxmox_name or vm.name, vmid)
             else:
                 self._stage_started(ledger, "vm_created", persist_ledger)
+                
+                # Map VMware values to Proxmox equivalents
+                ostype = self._map_guest_os_to_ostype(getattr(vm, "guest_id", ""), getattr(vm, "guest_os_full_name", ""))
+                scsihw = self._map_scsi_to_proxmox(getattr(vm, "scsi_controller_type", "") or self.config.proxmox.scsi_controller)
+                hotplug_cpu = getattr(vm, "cpu_hotplug_enabled", False)
+                hotplug_memory = getattr(vm, "memory_hotplug_enabled", False)
+                
                 proxmox_name = self.proxmox.create_vm(
                     vmid=vmid,
                     name=vm.name,
@@ -1304,13 +1402,22 @@ class MigrationEngine:
                     cores=vm.cpu_count,
                     sockets=1,
                     bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
-                    scsihw=self.config.proxmox.scsi_controller,
+                    scsihw=scsihw,
                     agent=True,
+                    hotplug_cpu=hotplug_cpu,
+                    hotplug_memory=hotplug_memory,
+                    ostype=ostype,
                 )
                 efi_disk_added = False
                 if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
                     self.proxmox.add_efi_disk(vmid, target_storage, target_format)
                     efi_disk_added = True
+                
+                # Set VM description/annotation if available
+                annotation = getattr(vm, "annotation", "")
+                if annotation:
+                    self.proxmox.set_vm_options(vmid, {"description": annotation})
+                
                 self._stage_succeeded(
                     ledger,
                     "vm_created",
@@ -1351,8 +1458,13 @@ class MigrationEngine:
                     continue
                 bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
+                
+                # Map VMware virtualDev to Proxmox model
+                virtual_dev = getattr(nic, "virtual_dev", "")
+                nic_model = self._map_nic_model(virtual_dev) if virtual_dev else "virtio"
+                
                 self._stage_started(ledger, "nics_configured", persist_ledger)
-                self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
+                self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model=nic_model)
                 self._record_network(
                     ledger,
                     {
@@ -1360,7 +1472,7 @@ class MigrationEngine:
                         "label": nic.label,
                         "bridge": bridge_name,
                         "macaddr": mac,
-                        "model": "virtio",
+                        "model": nic_model,
                         "vlan": getattr(nic, "vlan_id", None),
                     },
                     persist_ledger,
@@ -1652,6 +1764,13 @@ class MigrationEngine:
                 self.logger.info("Reusing previously created VM %s (VMID %s)", proxmox_name or vm.name, vmid)
             else:
                 self._stage_started(ledger, "vm_created", persist_ledger)
+                
+                # Map VMware values to Proxmox equivalents
+                ostype = self._map_guest_os_to_ostype(getattr(vm, "guest_id", ""), getattr(vm, "guest_os_full_name", ""))
+                scsihw = self._map_scsi_to_proxmox(getattr(vm, "scsi_controller_type", "") or self.config.proxmox.scsi_controller)
+                hotplug_cpu = getattr(vm, "cpu_hotplug_enabled", False)
+                hotplug_memory = getattr(vm, "memory_hotplug_enabled", False)
+                
                 proxmox_name = self.proxmox.create_vm(
                     vmid=vmid,
                     name=vm.name,
@@ -1659,13 +1778,22 @@ class MigrationEngine:
                     cores=vm.cpu_count,
                     sockets=1,
                     bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
-                    scsihw=self.config.proxmox.scsi_controller,
+                    scsihw=scsihw,
                     agent=True,
+                    hotplug_cpu=hotplug_cpu,
+                    hotplug_memory=hotplug_memory,
+                    ostype=ostype,
                 )
                 efi_disk_added = False
                 if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
                     self.proxmox.add_efi_disk(vmid, target_storage, target_format)
                     efi_disk_added = True
+                
+                # Set VM description/annotation if available
+                annotation = getattr(vm, "annotation", "")
+                if annotation:
+                    self.proxmox.set_vm_options(vmid, {"description": annotation})
+                
                 self._stage_succeeded(
                     ledger,
                     "vm_created",
@@ -1700,8 +1828,13 @@ class MigrationEngine:
                     continue
                 bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
+                
+                # Map VMware virtualDev to Proxmox model
+                virtual_dev = getattr(nic, "virtual_dev", "")
+                nic_model = self._map_nic_model(virtual_dev) if virtual_dev else "virtio"
+                
                 self._stage_started(ledger, "nics_configured", persist_ledger)
-                self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
+                self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model=nic_model)
                 self._record_network(
                     ledger,
                     {
@@ -1709,7 +1842,7 @@ class MigrationEngine:
                         "label": nic.label,
                         "bridge": bridge_name,
                         "macaddr": mac,
-                        "model": "virtio",
+                        "model": nic_model,
                         "vlan": getattr(nic, "vlan_id", None),
                     },
                     persist_ledger,

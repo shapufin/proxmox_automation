@@ -279,6 +279,63 @@
         </div>
       </div>
 
+      {# ── Advanced Specs (High-Fidelity VMX Mapping) ── #}
+      <div class="wz-section-title">Advanced Specs (High-Fidelity VMX Mapping)</div>
+      <div class="field">
+        <label>Hotplug Support</label>
+        <div class="grid grid-cols-2 gap-8">
+          <label class="toggle-row" style="cursor:pointer">
+            <input type="checkbox" id="wz_hotplug_cpu" onchange="syncVmxHardwareOverrides()">
+            <div class="toggle-label">
+              <strong>CPU Hotplug</strong>
+              <span>Allow adding CPUs to running VM</span>
+            </div>
+          </label>
+          <label class="toggle-row" style="cursor:pointer">
+            <input type="checkbox" id="wz_hotplug_memory" onchange="syncVmxHardwareOverrides()">
+            <div class="toggle-label">
+              <strong>RAM Hotplug</strong>
+              <span>Allow adding memory to running VM</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="wz_scsi_controller">SCSI Controller Type</label>
+        <select id="wz_scsi_controller" class="form-select" onchange="syncVmxHardwareOverrides()">
+          <option value="">Auto (virtio-scsi-single)</option>
+          <option value="virtio-scsi-single">VirtIO SCSI Single (recommended)</option>
+          <option value="virtio-scsi-pci">VirtIO SCSI PCI</option>
+          <option value="lsi">LSI Logic (broad compatibility)</option>
+          <option value="lsi53c810">LSI 53C810</option>
+          <option value="pvscsi">VMware Paravirtual SCSI</option>
+          <option value="buslogic">BusLogic (legacy)</option>
+          <option value="megaraid">MegaRAID</option>
+          <option value="mptsas1068">LSI SAS 1068</option>
+        </select>
+        <span class="help">Matches VMware SCSI controller type. Default: VirtIO SCSI Single for best performance.</span>
+      </div>
+
+      <div class="field">
+        <label for="wz_nic_model_default">Default NIC Model</label>
+        <select id="wz_nic_model_default" class="form-select" onchange="syncVmxHardwareOverrides()">
+          <option value="">Auto (virtio)</option>
+          <option value="virtio">VirtIO (paravirtualized, best Linux performance)</option>
+          <option value="e1000">Intel E1000 (broad compatibility)</option>
+          <option value="vmxnet3">VMXNET3 (VMware paravirtualized)</option>
+          <option value="rtl8139">Realtek RTL8139 (legacy)</option>
+        </select>
+        <span class="help">Default network adapter model. Can be overridden per-NIC below.</span>
+      </div>
+
+      <div class="field">
+        <label for="wz_description">VM Description / Annotation</label>
+        <textarea id="wz_description" class="form-input" rows="2" placeholder="Optional VM description or notes"
+                  oninput="syncVmxHardwareOverrides()"></textarea>
+        <span class="help">Migrated from VMware annotation field. Visible in Proxmox VM list.</span>
+      </div>
+
       <div class="field" id="vmx-hints" style="display:none"></div>
 
       <div class="wz-actions">
@@ -502,6 +559,12 @@ function syncVmxHardwareOverrides() {
     cpu_count: readNumberValue('wz_hw_cpu'),
     firmware: (document.getElementById('wz_hw_firmware') || {}).value || '',
     guest_os: (document.getElementById('wz_hw_guest_os') || {}).value || '',
+    // Advanced specs
+    cpu_hotplug_enabled: (document.getElementById('wz_hotplug_cpu') || {}).checked || false,
+    memory_hotplug_enabled: (document.getElementById('wz_hotplug_memory') || {}).checked || false,
+    scsi_controller_type: (document.getElementById('wz_scsi_controller') || {}).value || '',
+    nic_model_default: (document.getElementById('wz_nic_model_default') || {}).value || '',
+    description: (document.getElementById('wz_description') || {}).value || '',
   };
   updateSummary();
 }
@@ -899,6 +962,26 @@ function applyVmxSpecs(specs) {
   if (cpuEl && !cpuEl.value && specs.cpu_count) cpuEl.value = specs.cpu_count;
   if (fwEl && !fwEl.value && specs.firmware) fwEl.value = specs.firmware;
   if (osEl && !osEl.value && specs.guest_os) osEl.value = specs.guest_os;
+
+  // Pre-fill advanced specs from VMX data
+  const hotplugCpuEl = document.getElementById('wz_hotplug_cpu');
+  const hotplugMemEl = document.getElementById('wz_hotplug_memory');
+  const scsiEl = document.getElementById('wz_scsi_controller');
+  const nicModelEl = document.getElementById('wz_nic_model_default');
+  const descEl = document.getElementById('wz_description');
+
+  if (hotplugCpuEl && specs.cpu_hotplug_enabled) hotplugCpuEl.checked = true;
+  if (hotplugMemEl && specs.memory_hotplug_enabled) hotplugMemEl.checked = true;
+  if (scsiEl && !scsiEl.value && specs.scsi_type) scsiEl.value = specs.scsi_type;
+  if (nicModelEl && !nicModelEl.value && specs.networks && specs.networks[0]) {
+    // Use first NIC's virtual_dev as default if available
+    const firstNicModel = specs.networks[0].virtual_dev || specs.networks[0].adapter;
+    if (firstNicModel) nicModelEl.value = firstNicModel;
+  }
+  if (descEl && !descEl.value && specs.annotation) descEl.value = specs.annotation;
+
+  // Sync the new values to state
+  syncVmxHardwareOverrides();
   syncVmxHardwareOverrides();
   updateSummary();
   if (state._discoveredStorages.length) {

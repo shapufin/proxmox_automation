@@ -334,7 +334,197 @@ Wizard UI polls `job_status_api` for live status/logs and updates progress witho
 
 ---
 
-## 10. Where to Start for Common Tasks
+## 10. High-Fidelity VMX-to-Proxmox Mapping Logic
+
+The migration engine preserves VMware VM metadata by mapping VMX configuration keys to Proxmox CLI arguments. This ensures hardware fidelity during migration.
+
+### 10.1 Data Flow
+
+1. **VMware Direct Mode** (`vmware.py`): Uses pyVmomi API to extract VM properties from live VMware
+2. **Local Disk Mode** (`disk.py`): Parses `.vmx` files using regex to extract configuration
+3. **Model Storage** (`models.py`): `VmwareVmSpec` and `VmwareNicSpec` hold extracted metadata
+4. **Mapping Logic** (`engine.py`): Helper functions translate VMware values to Proxmox equivalents
+5. **Proxmox CLI** (`proxmox.py`): Mapped values passed to `qm create` and `qm set` commands
+
+### 10.2 Complete Mapping Table
+
+| Category | VMX Key / pyVmomi Property | Proxmox CLI Argument | Proxmox Values | Default | Mapping Function |
+|----------|---------------------------|---------------------|---------------|---------|------------------|
+| **CPU Hotplug** | `vcpu.hotadd` / `config.cpuHotAddEnabled` | `--hotplug cpu` | (flag) | false | Direct boolean |
+| **Memory Hotplug** | `mem.hotadd` / `config.memoryHotAddEnabled` | `--hotplug memory` | (flag) | false | Direct boolean |
+| **SCSI Controller** | `scsi0.virtualDev` / `VirtualSCSIController.virtualDev` | `--scsihw` | virtio-scsi-single, virtio-scsi-pci, lsi, lsi53c810, pvscsi, buslogic, megaraid, mptsas1068 | virtio-scsi-single | `_map_scsi_to_proxmox()` |
+| **NIC Model** | `ethernet0.virtualDev` / `VirtualEthernetCard.virtualDev` | `--net0 model=` | virtio, e1000, rtl8139, vmxnet3 | virtio | `_map_nic_model()` |
+| **Guest OS** | `guestOS` / `config.guestId` + `config.guestFullName` | `--ostype` | l26, win10, win11, win2019, win2016, win2012, win8, win7, other | l26 | `_map_guest_os_to_ostype()` |
+| **Description** | `annotation` / `config.annotation` | `--description` | (free text) | (empty) | Direct string |
+| **NIC MAC** | `ethernet0.address` / `VirtualEthernetCard.macAddress` | `--net0 macaddr=` | (MAC address) | auto-generated | Direct string |
+| **NIC VLAN** | `ethernet0.vlanId` / `VirtualEthernetCard.connectable` | `--net0 tag=` | (VLAN ID) | (none) | Direct integer |
+
+### 10.3 SCSI Controller Type Mapping
+
+| VMware Value | Proxmox Value | Notes |
+|--------------|---------------|-------|
+| pvscsi | pvscsi | Best performance, requires VMware Tools |
+| lsilogic | lsi | Broad compatibility (Windows, Linux, BSD) |
+| lsisas1068 | mptsas1068 | Windows Server clustering |
+| buslogic | buslogic | Legacy (Windows 9x/DOS only) |
+| (empty/unknown) | virtio-scsi-single | Modern, high performance default |
+
+### 10.4 NIC Model Mapping
+
+| VMware Value | Proxmox Value | Notes |
+|--------------|---------------|-------|
+| vmxnet3 | vmxnet3 | Paravirtualized, best performance (requires VMware Tools) |
+| e1000e | e1000 | Modern Intel Gigabit (inbox driver, broad compatibility) |
+| e1000 | e1000 | Legacy Intel Gigabit |
+| vlance | rtl8139 | Legacy AMD PCnet (Windows 9x/DOS only) |
+| (empty/unknown) | virtio | Paravirtualized, Linux best performance default |
+
+### 10.5 Guest OS Type Mapping
+
+| VMware guestOS / guestFullName | Proxmox ostype |
+|-------------------------------|----------------|
+| windows11 / win11 | win11 |
+| windows10 / win10 | win10 |
+| windowsServer2019 / server2019 / win2019 | win2019 |
+| windowsServer2016 / server2016 / win2016 | win2016 |
+| windowsServer2012 / server2012 / win2012 | win2012 |
+| windows8 / win8 | win8 |
+| windows7 / win7 | win7 |
+| centos*, rhel*, ubuntu*, debian* | l26 |
+| (other) | l26 (Linux kernel 2.6+ default) |
+
+### 10.6 Implementation Details
+
+#### Data Model Extensions (`vmware_to_proxmox/models.py`)
+
+```python
+@dataclass(slots=True)
+class VmwareVmSpec:
+    # ... existing fields ...
+    cpu_hotplug_enabled: bool = False
+    memory_hotplug_enabled: bool = False
+    scsi_controller_type: str = ""
+    guest_os_full_name: str = ""
+
+@dataclass(slots=True)
+class VmwareNicSpec:
+    # ... existing fields ...
+    virtual_dev: str = ""
+```
+
+#### VMware API Extraction (`vmware_to_proxmox/vmware.py`)
+
+```python
+# Extract from pyVmomi
+cpu_hotplug_enabled = bool(getattr(config, "cpuHotAddEnabled", False))
+memory_hotplug_enabled = bool(getattr(config, "memoryHotAddEnabled", False))
+scsi_controller_type = getattr(device, "virtualDev", "")  # from VirtualSCSIController
+virtual_dev = getattr(device, "virtualDev", "")  # from VirtualEthernetCard
+guest_os_full_name = getattr(config, "guestFullName", "") or guest_id
+annotation = str(getattr(config, "annotation", "") or "")
+```
+
+#### VMX File Parsing (`vmware_to_proxmox/disk.py`)
+
+```python
+# Extract from .vmx file
+cpu_hotplug_enabled = raw.get("vcpu.hotadd", "false").lower() == "true"
+memory_hotplug_enabled = raw.get("mem.hotadd", "false").lower() == "true"
+scsi_type = raw.get("scsi0.virtualdev", raw.get("scsi0.devicetype", "lsilogic"))
+virtual_dev = raw.get(f"ethernet{idx}.virtualdev", "vmxnet3")
+guest_os_full_name = raw.get("guestfullname", guest_os)
+annotation = raw.get("annotation", "")
+```
+
+#### Mapping Helper Functions (`vmware_to_proxmox/engine.py`)
+
+```python
+@staticmethod
+def _map_scsi_to_proxmox(vmware_scsi: str) -> str:
+    scsi_lower = vmware_scsi.lower()
+    if scsi_lower == "pvscsi": return "pvscsi"
+    if scsi_lower == "lsilogic": return "lsi"
+    if scsi_lower == "lsisas1068": return "mptsas1068"
+    if scsi_lower == "buslogic": return "buslogic"
+    return "virtio-scsi-single"
+
+@staticmethod
+def _map_nic_model(vmware_model: str) -> str:
+    model_lower = vmware_model.lower()
+    if model_lower == "vmxnet3": return "vmxnet3"
+    if model_lower in ("e1000e", "e1000"): return "e1000"
+    if model_lower == "vlance": return "rtl8139"
+    return "virtio"
+
+@staticmethod
+def _map_guest_os_to_ostype(guest_os: str, guest_os_full_name: str = "") -> str:
+    guest_lower = (guest_os_full_name or guest_os).lower()
+    if "windows11" in guest_lower or "win11" in guest_lower: return "win11"
+    if "windows10" in guest_lower or "win10" in guest_lower: return "win10"
+    # ... more Windows versions ...
+    return "l26"
+```
+
+#### Proxmox CLI Integration (`vmware_to_proxmox/proxmox.py`)
+
+```python
+def create_vm(
+    self,
+    # ... existing params ...
+    hotplug_cpu: bool = False,
+    hotplug_memory: bool = False,
+) -> str:
+    # ... build args ...
+    if hotplug_cpu:
+        args.extend(["--hotplug", "cpu"])
+    if hotplug_memory:
+        args.extend(["--hotplug", "memory"])
+    self._run(args)
+```
+
+#### Engine Usage (`vmware_to_proxmox/engine.py`)
+
+```python
+# Map and apply during VM creation
+ostype = self._map_guest_os_to_ostype(getattr(vm, "guest_id", ""), getattr(vm, "guest_os_full_name", ""))
+scsihw = self._map_scsi_to_proxmox(getattr(vm, "scsi_controller_type", "") or self.config.proxmox.scsi_controller)
+hotplug_cpu = getattr(vm, "cpu_hotplug_enabled", False)
+hotplug_memory = getattr(vm, "memory_hotplug_enabled", False)
+
+proxmox_name = self.proxmox.create_vm(
+    vmid=vmid,
+    # ... other params ...
+    ostype=ostype,
+    scsihw=scsihw,
+    hotplug_cpu=hotplug_cpu,
+    hotplug_memory=hotplug_memory,
+)
+
+# Set description after VM creation
+annotation = getattr(vm, "annotation", "")
+if annotation:
+    self.proxmox.set_vm_options(vmid, {"description": annotation})
+
+# Map NIC model during network configuration
+virtual_dev = getattr(nic, "virtual_dev", "")
+nic_model = self._map_nic_model(virtual_dev) if virtual_dev else "virtio"
+self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model=nic_model)
+```
+
+### 10.7 UI Integration (`templates/dashboard/wizard.html`)
+
+The wizard Step 3 includes an "Advanced Specs" section where discovered VMX values are pre-filled but editable:
+
+- **Hotplug Support**: Checkboxes for CPU and RAM hotplug
+- **SCSI Controller Type**: Dropdown with all Proxmox SCSI controller options
+- **Default NIC Model**: Dropdown with all Proxmox NIC model options
+- **VM Description / Annotation**: Textarea for free-form description
+
+These values are stored in `state.vmx_overrides` and sent to the server as part of the `vmx_specs` payload. The engine uses these overrides to override auto-detected values when present.
+
+---
+
+## 11. Where to Start for Common Tasks
 
 | Task | File(s) to edit |
 |---|---|
@@ -347,4 +537,5 @@ Wizard UI polls `job_status_api` for live status/logs and updates progress witho
 | Change styling | `static/dashboard.css` |
 | Add a new config option | `vmware_to_proxmox/config.py` (dataclass + loader) + `config.example.yaml` |
 | Change Docker setup | `docker-compose.yml`, `Dockerfile`, `entrypoint.sh` |
+| Add a new VMX-to-Proxmox mapping | `vmware_to_proxmox/engine.py` (mapping functions) + `vmware_to_proxmox/models.py` (fields) |
 | Change network/datastore mapping logic | `vmware_to_proxmox/config.py` (`bridge_for_network`, `storage_for_datastore`) |
