@@ -142,33 +142,33 @@ class VmwareClient:
                             lun_id=lun_id,
                             is_rdm=is_rdm,
                         )
-                    )
-            elif isinstance(device, vim.vm.device.VirtualEthernetCard):
-                label = getattr(device.deviceInfo, "label", f"nic{len(nics)}")
-                backing = getattr(device, "backing", None)
-                # Extract virtualDev (e.g., vmxnet3, e1000) instead of just class name
-                virtual_dev = getattr(device, "virtualDev", "") or ""
-                if not virtual_dev:
-                    # Fallback to class name if virtualDev not available
-                    virtual_dev = device.__class__.__name__.lower().replace("virtual", "").lower()
-                nics.append(
-                    VmwareNicSpec(
-                        label=label,
-                        network_name=str(getattr(backing, "deviceName", "") or getattr(getattr(device, "deviceInfo", None), "summary", "") or ""),
-                        mac_address=getattr(device, "macAddress", ""),
-                        adapter_type=device.__class__.__name__,
-                        vlan_id=None,
-                        virtual_dev=virtual_dev,
-                    )
                 )
-            elif isinstance(device, vim.vm.device.VirtualSCSIController):
-                # Extract SCSI controller type (e.g., pvscsi, lsilogic, lsisas1068)
-                if not scsi_controller_type:
-                    scsi_controller_type = getattr(device, "virtualDev", "") or ""
-            elif isinstance(device, vim.vm.device.VirtualTPM):
-                has_vtpm = True
-            elif isinstance(device, vim.vm.device.VirtualPCIPassthrough):
-                has_pci_passthrough = True
+                elif isinstance(device, vim.vm.device.VirtualEthernetCard):
+                    label = getattr(device.deviceInfo, "label", f"nic{len(nics)}")
+                    backing = getattr(device, "backing", None)
+                    # Extract virtualDev (e.g., vmxnet3, e1000) instead of just class name
+                    virtual_dev = getattr(device, "virtualDev", "") or ""
+                    if not virtual_dev:
+                        # Fallback to class name if virtualDev not available
+                        virtual_dev = device.__class__.__name__.lower().replace("virtual", "").lower()
+                    nics.append(
+                        VmwareNicSpec(
+                            label=label,
+                            network_name=str(getattr(backing, "deviceName", "") or getattr(getattr(device, "deviceInfo", None), "summary", "") or ""),
+                            mac_address=getattr(device, "macAddress", ""),
+                            adapter_type=device.__class__.__name__,
+                            vlan_id=None,
+                            virtual_dev=virtual_dev,
+                        )
+                    )
+                elif isinstance(device, vim.vm.device.VirtualSCSIController):
+                    # Extract SCSI controller type (e.g., pvscsi, lsilogic, lsisas1068)
+                    if not scsi_controller_type:
+                        scsi_controller_type = getattr(device, "virtualDev", "") or ""
+                elif isinstance(device, vim.vm.device.VirtualTPM):
+                    has_vtpm = True
+                elif isinstance(device, vim.vm.device.VirtualPCIPassthrough):
+                    has_pci_passthrough = True
             except Exception as e:
                 self.logger.error(f"Error processing device {device.__class__.__name__}: {e}", exc_info=True)
                 continue
