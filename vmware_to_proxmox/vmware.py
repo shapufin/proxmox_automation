@@ -143,9 +143,6 @@ class VmwareClient:
                             is_rdm=is_rdm,
                         )
                     )
-            except Exception as e:
-                self.logger.error(f"Error processing device {device.__class__.__name__}: {e}", exc_info=True)
-                continue
             elif isinstance(device, vim.vm.device.VirtualEthernetCard):
                 label = getattr(device.deviceInfo, "label", f"nic{len(nics)}")
                 backing = getattr(device, "backing", None)
@@ -172,6 +169,9 @@ class VmwareClient:
                 has_vtpm = True
             elif isinstance(device, vim.vm.device.VirtualPCIPassthrough):
                 has_pci_passthrough = True
+            except Exception as e:
+                self.logger.error(f"Error processing device {device.__class__.__name__}: {e}", exc_info=True)
+                continue
 
         firmware = getattr(config, "firmware", "bios") or "bios"
         guest_id = getattr(config, "guestId", "") or ""
