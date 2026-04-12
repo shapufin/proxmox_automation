@@ -216,6 +216,13 @@
         <div id="disk-storage-rows"></div>
       </div>
 
+      {# ── Datastore mapping (VMware datastore → Proxmox storage) ── #}
+      <div id="datastore-mapping" class="wz-hidden wz-stack-gap">
+        <div class="wz-section-title">Datastore Mapping (VMware → Proxmox)</div>
+        <div class="help">Map VMware datastores to Proxmox storage pools. Disks on unmapped datastores use the default storage.</div>
+        <div id="datastore-mapping-rows"></div>
+      </div>
+
       {# ── Default bridge ── #}
       <div class="field">
         <label>Default network bridge / SDN vnet <span class="text-error">*</span></label>
@@ -437,6 +444,7 @@
   <input type="hidden" name="dry_run"          id="f_dry_run"     value="on">
   <input type="hidden" name="start_after_import" id="f_start"    value="on">
   <input type="hidden" name="disk_storage_map"  id="f_disk_storage_map"  value="{}">
+  <input type="hidden" name="datastore_map"      id="f_datastore_map"      value="{}">
   <input type="hidden" name="nic_bridge_map"    id="f_nic_bridge_map"    value="{}">
   <input type="hidden" name="disk_resize_map"    id="f_disk_resize_map"    value="{}">
   <input type="hidden" name="allow_disk_shrink"  id="f_allow_disk_shrink" value="">
@@ -461,6 +469,7 @@ const state = {
   source_paths: [],        // array of host-absolute paths
   vmx_disk_specs: [],      // parsed VMX disk rows
   disk_storage_map: {},    // {path: storageId}  per-disk override
+  datastore_map: {},       // {vmware_datastore: proxmox_storage} datastore mapping
   nic_bridge_map:   {},    // {nicIndex: bridgeName} per-NIC override
   disk_resize_map:  {},    // {path: sizeGb} per-disk resize override
   allow_disk_shrink: false,
@@ -643,7 +652,11 @@ function buildPerDiskRows(storages) {
     const sourceGb = disk.capacity_gb || (disk.capacity_bytes ? Math.round(disk.capacity_bytes / (1024**3)) : 0);
     const row = document.createElement('div');
     row.className = 'wz-disk-row';
-    const meta = [disk.label, disk.datastore ? `datastore: ${disk.datastore}` : '', disk.controller_type ? `${disk.controller_type}${disk.controller !== undefined ? disk.controller : ''}` : ''].filter(Boolean).join(' · ');
+    const metaParts = [disk.label];
+    if (disk.datastore) metaParts.push(`datastore: ${disk.datastore}`);
+    if (disk.is_rdm) metaParts.push('RDM');
+    if (disk.controller_type) metaParts.push(`${disk.controller_type}${disk.controller !== undefined ? disk.controller : ''}`);
+    const meta = metaParts.filter(Boolean).join(' · ');
     const sourceSizeLabel = sourceGb ? `<span class="wz-disk-size">${sourceGb} GB</span>` : '';
     row.innerHTML = `<span class="wz-disk-name" title="${esc(key)}">💿 ${esc(name)} ${sourceSizeLabel}${meta ? `<div class="wz-disk-meta">${esc(meta)}</div>` : ''}</span>`;
 
@@ -732,7 +745,86 @@ function buildPerNicRows(bridges) {
       const value = txt.value.trim();
       if (value) state.nic_bridge_map[key] = value; else delete state.nic_bridge_map[key];
     });
-    row.appendChild(sel); row.appendChild(txt);
+    row.appendChild(sel);
+    row.appendChild(txt);
+    rows.appendChild(row);
+  });
+}
+
+function buildDatastoreMappingRows(storages) {
+  // Extract unique datastores from VMX disk specs
+  const datastores = new Set();
+  state.vmx_disk_specs.forEach(disk => {
+    if (disk.datastore) {
+      datastores.add(disk.datastore);
+    }
+  });
+  
+  if (datastores.size === 0) { 
+    document.getElementById('datastore-mapping').style.display = 'none'; 
+    return; 
+  }
+  
+  document.getElementById('datastore-mapping').style.display = '';
+  const rows = document.getElementById('datastore-mapping-rows');
+  rows.innerHTML = '';
+  
+  datastores.forEach(datastore => {
+    const row = document.createElement('div');
+    row.className = 'wz-disk-row';
+    
+    // VMware datastore label
+    const label = document.createElement('span');
+    label.className = 'wz-disk-name';
+    label.textContent = `📦 ${esc(datastore)}`;
+    label.title = `VMware datastore: ${esc(datastore)}`;
+    
+    // Proxmox storage selector
+    const sel = document.createElement('select');
+    sel.className = 'form-select';
+    sel.style.flex = '1';
+    sel.innerHTML = `<option value="">(default: ${esc(state.storage||'auto')})</option>`;
+    for (const s of storages) {
+      const o = document.createElement('option');
+      o.value = s.storage; 
+      o.textContent = `${s.storage} (${s.type||''} ${s.available_gb||0}GB free)`;
+      sel.appendChild(o);
+    }
+    
+    // Text input for manual entry
+    const txt = document.createElement('input');
+    txt.type = 'text'; 
+    txt.className = 'form-input'; 
+    txt.style.flex = '1';
+    txt.placeholder = 'or type name';
+    
+    // Set current value from state
+    const currentMapping = state.datastore_map[datastore];
+    if (currentMapping) {
+      txt.value = currentMapping;
+    }
+    
+    // Event listeners
+    const updateMapping = () => {
+      const value = txt.value.trim();
+      if (value) {
+        state.datastore_map[datastore] = value;
+      } else {
+        delete state.datastore_map[datastore];
+      }
+    };
+    
+    sel.addEventListener('change', () => { 
+      if (sel.value) { 
+        txt.value = sel.value; 
+        updateMapping();
+      } 
+    });
+    txt.addEventListener('input', updateMapping);
+    
+    row.appendChild(label);
+    row.appendChild(sel);
+    row.appendChild(txt);
     rows.appendChild(row);
   });
 }
@@ -853,6 +945,7 @@ async function discoverProxmox() {
 
     // Build per-disk and per-NIC assignment rows
     buildPerDiskRows(d.storages);
+    buildDatastoreMappingRows(d.storages);
     buildPerNicRows(d.bridges);
 
     result.innerHTML = renderInventoryTables(d);
@@ -1182,6 +1275,7 @@ function submitJob() {
   document.getElementById('f_dry_run').value  = state.dry_run ? 'on' : '';
   document.getElementById('f_start').value    = state.start_after_import ? 'on' : '';
   document.getElementById('f_disk_storage_map').value  = JSON.stringify(state.disk_storage_map);
+  document.getElementById('f_datastore_map').value     = JSON.stringify(state.datastore_map);
   document.getElementById('f_nic_bridge_map').value    = JSON.stringify(state.nic_bridge_map);
   document.getElementById('f_disk_resize_map').value   = JSON.stringify(state.disk_resize_map);
   document.getElementById('f_allow_disk_shrink').value = state.allow_disk_shrink ? 'on' : '';

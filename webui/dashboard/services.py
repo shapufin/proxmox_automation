@@ -194,6 +194,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
             log_lines.append(f"manifest_path={manifest_path if manifest_path is not None else 'none'}")
             log_lines.append(f"source_paths={[str(p) for p in disk_paths]}")
             log_lines.append(f"disk_storage_map={json.dumps(job.disk_storage_map or {}, default=str)}")
+            log_lines.append(f"datastore_map={json.dumps(job.datastore_map or {}, default=str)}")
             log_lines.append(f"nic_bridge_map={json.dumps(job.nic_bridge_map or {}, default=str)}")
             log_lines.append(f"disk_resize_map={json.dumps(job.disk_resize_map or {}, default=str)}")
             result = engine.migrate_local_disks_or_archive(
@@ -208,6 +209,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 vmx_specs=job.vmx_specs if job.vmx_specs else None,
                 vmid=vmid,
                 disk_storage_map=job.disk_storage_map or None,
+                datastore_map=job.datastore_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
                 disk_resize_map=job.disk_resize_map or None,
                 allow_disk_shrink=allow_disk_shrink,

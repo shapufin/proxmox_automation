@@ -30,6 +30,11 @@ class VmwareDiskSpec:
     controller_key: Optional[int] = None
     unit_number: Optional[int] = None
     thin_provisioned: bool = False
+    datastore: str = ""  # Per-disk datastore name from VMware
+    backing_mode: str = ""  # "persistent", "independent_persistent", "independent_nonpersistent", "rdm"
+    device_type: str = ""  # "scsi-hardDisk", "ide-hardDisk", "sata-hardDisk", "nvme"
+    lun_id: Optional[int] = None  # LUN identifier for RDM devices
+    is_rdm: bool = False  # True if this is a Raw Device Mapping
 
 
 @dataclass(slots=True)

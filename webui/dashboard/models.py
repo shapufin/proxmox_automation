@@ -141,6 +141,7 @@ class MigrationJob(models.Model):
     proxmox_host = models.ForeignKey("ProxmoxHost", null=True, blank=True, on_delete=models.SET_NULL)
     vmware_host  = models.ForeignKey("VMwareHost",  null=True, blank=True, on_delete=models.SET_NULL)
     disk_storage_map = models.JSONField(default=dict, blank=True)
+    datastore_map = models.JSONField(default=dict, blank=True)
     nic_bridge_map = models.JSONField(default=dict, blank=True)
     disk_resize_map = models.JSONField(default=dict, blank=True)
     allow_disk_shrink = models.BooleanField(default=False)

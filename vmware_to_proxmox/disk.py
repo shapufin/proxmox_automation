@@ -27,6 +27,15 @@ _VMX_DISK_RE = re.compile(
 _VMX_DISK_KEY_RE = re.compile(r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.filename$', re.IGNORECASE)
 
 
+_VMX_DISK_TYPE_RE = re.compile(r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.deviceType$', re.IGNORECASE)
+
+
+_VMX_DISK_MODE_RE = re.compile(r'^(scsi|ide|sata|nvme)(\d+):(\d+)\.mode$', re.IGNORECASE)
+
+
+_VMX_RDM_DEVICE_RE = re.compile(r'^scsi(\d+):(\d+)\.fileName\s*=\s*".*\.vmdk"', re.IGNORECASE)
+
+
 def _split_vmx_disk_reference(value: str) -> tuple[str, str]:
     """Return (datastore, file_name) extracted from a VMX disk reference.
 
@@ -86,7 +95,31 @@ def parse_vmx(content: str) -> dict[str, object]:
         m = _VMX_DISK_KEY_RE.match(key)
         if m and val.lower().endswith(".vmdk"):
             slot_key = (int(m.group(2)), int(m.group(3)))
+            controller_type = m.group(1).lower()
             datastore, file_name = _split_vmx_disk_reference(val)
+            
+            # Extract device type (scsi-hardDisk, ide-hardDisk, etc.)
+            device_type_key = f"{controller_type}{slot_key[0]}:{slot_key[1]}.deviceType"
+            device_type = raw.get(device_type_key, f"{controller_type}-hardDisk")
+            
+            # Extract disk mode (persistent, independent-persistent, independent-nonpersistent)
+            mode_key = f"{controller_type}{slot_key[0]}:{slot_key[1]}.mode"
+            backing_mode = raw.get(mode_key, "persistent")
+            
+            # Detect RDM devices (Raw Device Mapping)
+            is_rdm = backing_mode.startswith("independent") or "rdm" in device_type.lower()
+            
+            # Extract LUN ID for RDM devices (if available)
+            lun_id = None
+            if is_rdm:
+                lun_key = f"{controller_type}{slot_key[0]}:{slot_key[1]}.lun"
+                lun_val = raw.get(lun_key, "")
+                if lun_val:
+                    try:
+                        lun_id = int(lun_val)
+                    except ValueError:
+                        pass
+            
             disk_entries.append((
                 slot_key,
                 {
@@ -94,10 +127,14 @@ def parse_vmx(content: str) -> dict[str, object]:
                     "file_name": file_name,
                     "path": val,
                     "datastore": datastore,
-                    "controller_type": m.group(1).lower(),
+                    "controller_type": controller_type,
                     "controller": slot_key[0],
                     "unit_number": slot_key[1],
-                    "backing_type": "file",
+                    "backing_type": "rdm" if is_rdm else "file",
+                    "device_type": device_type,
+                    "backing_mode": backing_mode,
+                    "lun_id": lun_id,
+                    "is_rdm": is_rdm,
                     "thin_provisioned": True,
                 },
             ))

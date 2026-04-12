@@ -333,6 +333,7 @@ def launch_job(request: HttpRequest) -> HttpResponse:
             bridge=form.cleaned_data.get("bridge", ""),
             disk_format=form.cleaned_data.get("disk_format", ""),
             disk_storage_map=_parse_json_field(form.cleaned_data.get("disk_storage_map", "")),
+            datastore_map=_parse_json_field(form.cleaned_data.get("datastore_map", "")),
             nic_bridge_map=_parse_json_field(form.cleaned_data.get("nic_bridge_map", "")),
             disk_resize_map=_parse_json_field(form.cleaned_data.get("disk_resize_map", "")),
             allow_disk_shrink=bool(form.cleaned_data.get("allow_disk_shrink", False)),

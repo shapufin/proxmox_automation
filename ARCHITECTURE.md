@@ -524,7 +524,114 @@ These values are stored in `state.vmx_overrides` and sent to the server as part 
 
 ---
 
-## 11. Where to Start for Common Tasks
+## 11. Multi-Datastore Mapping
+
+The migration engine now supports mapping multiple VMware datastores to Proxmox storage pools side-by-side before migration.
+
+### Data Flow
+
+1. **VMX Parsing** (`vmware_to_proxmox/disk.py`):
+   - Extracts per-disk datastore from VMX file references (e.g., `[datastore1] folder/vm.vmdk`)
+   - Detects RDM (Raw Device Mapping) devices via `deviceType` and `mode` fields
+   - Captures LUN identifiers for RDM devices
+   - Stores in `VmwareDiskSpec.datastore`, `VmwareDiskSpec.is_rdm`, `VmwareDiskSpec.lun_id`
+
+2. **VMware API** (`vmware_to_proxmox/vmware.py`):
+   - Extracts per-disk datastore from `backing.fileName`
+   - Detects backing mode (`persistent`, `independent-persistent`, etc.)
+   - Captures device type and LUN information for RDM devices
+
+3. **Config-Based Mapping** (`vmware_to_proxmox/config.py`):
+   - `ProxmoxConfig.datastore_map`: Default VMware-to-Proxmox datastore mappings
+   - `Config.storage_for_datastore(datastore)`: Lookup Proxmox storage for VMware datastore
+
+4. **Wizard UI** (`templates/dashboard/wizard.html`):
+   - "Datastore Mapping" section shows all discovered VMware datastores
+   - Users can map each VMware datastore to a Proxmox storage pool
+   - `state.datastore_map`: User-defined overrides
+   - `buildDatastoreMappingRows(storages)`: Builds UI rows for each datastore
+
+5. **Engine Resolution** (`vmware_to_proxmox/engine.py`):
+   - `_resolve_disk_storage()` now accepts `datastore_map` parameter
+   - Lookup priority:
+     1. Per-disk storage map (`disk_storage_map[path]`)
+     2. Datastore map (`datastore_map[datastore]` or `datastore_map[datastore:datastore]`)
+     3. Storage override
+     4. Config-based mapping (`config.storage_for_datastore(datastore)`)
+     5. Default storage
+
+### Storage Resolution Algorithm
+
+```python
+def _resolve_disk_storage(
+    self,
+    disk: Optional[VmwareDiskSpec],
+    index: int,
+    storage_override: Optional[str] = None,
+    disk_storage_map: Optional[dict[str, str]] = None,
+    datastore_map: Optional[dict[str, str]] = None,
+) -> str:
+    datastore = getattr(disk, "datastore", "") if disk is not None else ""
+    # First check per-disk storage map
+    mapped = self._map_lookup(disk_storage_map, *self._disk_identity_keys(disk, index, datastore))
+    # If no per-disk mapping, check datastore map (datastore: proxmox_storage)
+    if not mapped and datastore and datastore_map:
+        mapped = datastore_map.get(f"datastore:{datastore}") or datastore_map.get(datastore)
+    # Fall back to storage_override or config-based datastore mapping
+    preferred = mapped or storage_override or (self.config.storage_for_datastore(datastore) if datastore else None)
+    return self._resolve_storage(preferred)
+```
+
+### Disk Identity Keys
+
+The `_disk_identity_keys()` method generates multiple lookup keys for mapping:
+- `datastore:{datastore_name}` - For datastore-based mapping
+- Full disk path
+- File name
+- Disk label
+- Controller and unit number
+- Generic fallback keys (`disk-{index}`, `scsi{index}`, `{index}`)
+
+### RDM Device Support
+
+RDM (Raw Device Mapping) devices are detected and flagged:
+- `VmwareDiskSpec.is_rdm`: True if device is RDM
+- `VmwareDiskSpec.backing_mode`: `persistent`, `independent-persistent`, etc.
+- `VmwareDiskSpec.lun_id`: LUN identifier for the device
+- `VmwareDiskSpec.device_type`: Device type (e.g., `scsi-hardDisk`)
+
+**Note**: RDM devices currently require manual reconfiguration in Proxmox as block device passthrough is not automatically migrated.
+
+### Configuration Example
+
+```yaml
+proxmox:
+  node: "pve1"
+  default_storage: "local-zfs"
+  default_bridge: "vmbr0"
+  datastore_map:
+    datastore1: "local-zfs"
+    datastore2: "nfs-storage"
+    ssd-datastore: "local-ssd"
+```
+
+### Backend Changes
+
+- **Models** (`webui/dashboard/models.py`): Added `datastore_map` JSONField to `MigrationJob`
+- **Views** (`webui/dashboard/views.py`): Parse `datastore_map` from form submission
+- **Services** (`webui/dashboard/services.py`): Pass `datastore_map` to engine
+- **Engine** (`vmware_to_proxmox/engine.py`): Accept and use `datastore_map` in storage resolution
+
+### Database Migration
+
+After adding the `datastore_map` field to the model, create and run a migration:
+
+```bash
+python manage.py makemigrations dashboard
+python manage.py migrate
+```
+
+## 12. Where to Start for Common Tasks
 
 | Task | File(s) to edit |
 |---|---|

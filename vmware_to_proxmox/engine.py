@@ -578,6 +578,10 @@ class MigrationEngine:
         unit_number = getattr(disk, "unit_number", None)
         label = getattr(disk, "label", "")
         file_name = getattr(disk, "file_name", "")
+        datastore = getattr(disk, "datastore", "")
+        # Add datastore as a high-priority key for mapping
+        if datastore:
+            keys.append(f"datastore:{datastore}")
         keys.extend(
             [
                 getattr(disk, "path", "") if hasattr(disk, "path") else "",
@@ -778,9 +782,15 @@ class MigrationEngine:
         index: int,
         storage_override: Optional[str] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
+        datastore_map: Optional[dict[str, str]] = None,
     ) -> str:
         datastore = getattr(disk, "datastore", "") if disk is not None else ""
+        # First check per-disk storage map
         mapped = self._map_lookup(disk_storage_map, *self._disk_identity_keys(disk, index, datastore))
+        # If no per-disk mapping, check datastore map (datastore: proxmox_storage)
+        if not mapped and datastore and datastore_map:
+            mapped = datastore_map.get(f"datastore:{datastore}") or datastore_map.get(datastore)
+        # Fall back to storage_override or config-based datastore mapping
         preferred = mapped or storage_override or (self.config.storage_for_datastore(datastore) if datastore else None)
         return self._resolve_storage(preferred)
 
@@ -1546,7 +1556,7 @@ class MigrationEngine:
                     except Exception as resize_err:
                         self.logger.warning("Failed to resize local disk %s: %s", source_path.name, resize_err)
 
-                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
+                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map, datastore_map)
                 volume_id = self.proxmox.import_disk(vmid, converted_path, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
@@ -1900,7 +1910,7 @@ class MigrationEngine:
                     except Exception as resize_err:
                         self.logger.warning("Failed to resize disk %s: %s", disk_path.name, resize_err)
 
-                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map)
+                disk_target_storage = self._resolve_disk_storage(disk_spec, index, target_storage, disk_storage_map, datastore_map)
                 volume_id = self.proxmox.import_disk(vmid, source_for_import, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
@@ -1999,6 +2009,7 @@ class MigrationEngine:
         vmx_specs: Optional[dict] = None,
         vmid: Optional[int] = None,
         disk_storage_map: Optional[dict[str, str]] = None,
+        datastore_map: Optional[dict[str, str]] = None,
         nic_bridge_map: Optional[dict[str, str]] = None,
         disk_resize_map: Optional[dict[str, int]] = None,
         allow_disk_shrink: bool = False,
