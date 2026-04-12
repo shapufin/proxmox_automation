@@ -236,7 +236,14 @@ def _load_inventory(request: HttpRequest) -> dict[str, list[object]]:
 def _parse_json_field(raw: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw or "{}")
-        return parsed if isinstance(parsed, dict) else {}
+        if not isinstance(parsed, dict):
+            return {}
+        # Validate keys and values are strings (for datastore_map, disk_storage_map, etc.)
+        validated = {}
+        for key, val in parsed.items():
+            if isinstance(key, str) and isinstance(val, str):
+                validated[key] = val
+        return validated
     except Exception:  # noqa: BLE001
         return {}
 

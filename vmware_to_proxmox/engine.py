@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone as dt_timezone
 import json
 import logging
+import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -785,6 +786,10 @@ class MigrationEngine:
         datastore_map: Optional[dict[str, str]] = None,
     ) -> str:
         datastore = getattr(disk, "datastore", "") if disk is not None else ""
+        # Validate datastore name format to prevent injection
+        if datastore and not re.match(r'^[a-zA-Z0-9_\-\.]+$', datastore):
+            self.logger.warning("Invalid datastore name format: %s", datastore)
+            datastore = ""
         # First check per-disk storage map
         mapped = self._map_lookup(disk_storage_map, *self._disk_identity_keys(disk, index, datastore))
         # If no per-disk mapping, check datastore map (datastore: proxmox_storage)
@@ -792,6 +797,9 @@ class MigrationEngine:
             mapped = datastore_map.get(f"datastore:{datastore}") or datastore_map.get(datastore)
         # Fall back to storage_override or config-based datastore mapping
         preferred = mapped or storage_override or (self.config.storage_for_datastore(datastore) if datastore else None)
+        if not preferred:
+            disk_label = disk.label if disk else f"disk-{index}"
+            raise ProxmoxClientError(f"No storage resolved for {disk_label}. Ensure a default storage is configured or provide explicit mapping.")
         return self._resolve_storage(preferred)
 
     def _resolve_network_bridge(self, network_name: str, bridge_override: Optional[str] = None) -> str:
@@ -2030,6 +2038,13 @@ class MigrationEngine:
         Temp directories created for archive extraction are deleted after the
         migration completes (or fails).
         """
+        # Validate datastore_map parameter type
+        if datastore_map is not None and not isinstance(datastore_map, dict):
+            raise TypeError("datastore_map must be a dict or None")
+        # Validate disk_storage_map parameter type
+        if disk_storage_map is not None and not isinstance(disk_storage_map, dict):
+            raise TypeError("disk_storage_map must be a dict or None")
+
         resolved_paths: list[Path] = []
         host_temp_dirs: list[str] = []
 

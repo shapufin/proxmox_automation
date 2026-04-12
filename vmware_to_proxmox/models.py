@@ -116,8 +116,3 @@ class MigrationResult:
     firmware: FirmwareMode
     warnings: list[str] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
-    target_storage: str
-    disk_format: DiskFormat
-    firmware: FirmwareMode
-    warnings: list[str] = field(default_factory=list)
-    details: dict[str, Any] = field(default_factory=dict)
