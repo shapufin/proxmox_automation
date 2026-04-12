@@ -119,11 +119,11 @@
 {# ── RECENT JOBS ── #}
 <div class="panel">
   <div class="section-header">
-    <div class="panel-title" style="border:none;margin:0;padding:0"><span class="icon">📋</span> Recent Jobs</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <form method="get" action="/" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <label style="font-size:0.82rem;color:var(--muted)">Compatibility</label>
-        <select name="compatibility" class="input" style="min-width:150px;padding:8px 10px">
+    <div class="panel-title panel-title-compact"><span class="icon">📋</span> Recent Jobs</div>
+    <div class="dashboard-actions">
+      <form method="get" action="/" class="dashboard-filter-form">
+        <label class="dashboard-filter-label">Compatibility</label>
+        <select name="compatibility" class="input dashboard-filter-select">
           {% for choice in compatibility_filter_choices %}
             <option value="{{ choice.value }}" {% if choice.selected == "true" %}selected{% endif %}>{{ choice.label }}</option>
           {% endfor %}
@@ -151,7 +151,7 @@
         {% with job=item.job compatibility=item.compatibility %}
         <tr>
           <td><a href="/jobs/{{ job.id }}/">{{ job.id }}</a></td>
-          <td style="font-weight:500">{{ job.name }}</td>
+          <td class="cell-strong">{{ job.name }}</td>
           <td>
             {% if job.mode == "vmware" %}
               <span class="badge badge-info">VMware</span>
@@ -188,7 +188,7 @@
               </div>
             {% endif %}
           </td>
-          <td style="color:var(--muted);font-size:0.83rem">{{ job.updated_at|date:"Y-m-d H:i" }}</td>
+          <td class="cell-muted">{{ job.updated_at|date:"Y-m-d H:i" }}</td>
           <td><a href="/jobs/{{ job.id }}/" class="btn btn-secondary btn-sm">View</a></td>
         </tr>
         {% endwith %}

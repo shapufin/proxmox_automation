@@ -600,6 +600,12 @@ class ProxmoxClient:
     def destroy_vm(self, vmid: int) -> None:
         self._run(["qm", "destroy", str(vmid), "--purge", "1"])
 
+    def remove_volume(self, volume_id: str) -> None:
+        safe_volume_id = _normalize_volume_id(volume_id)
+        if not safe_volume_id:
+            return
+        self._run(["pvesm", "free", safe_volume_id])
+
     def config_dump(self, vmid: int) -> str:
         proc = self._run(["qm", "config", str(vmid)])
         return proc.stdout
@@ -730,7 +736,7 @@ class ProxmoxClient:
         except Exception:  # noqa: BLE001
             return []
 
-        lines = out.splitlines()
+        lines = (out.stdout or "").splitlines()
         filenames: list[str] = []
         if parse == "tar":
             filenames = [l.strip() for l in lines if l.strip()]

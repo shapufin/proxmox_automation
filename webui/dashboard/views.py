@@ -189,6 +189,58 @@ def _compatibility_filter_choices(selected: str) -> list[dict[str, str]]:
     ]
 
 
+def _format_json_text(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, indent=2, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+def _load_inventory(request: HttpRequest) -> dict[str, list[object]]:
+    inventory = _empty_inventory()
+    try:
+        engine = get_engine()
+        try:
+            inventory["proxmox_storages"] = [
+                {"storage": s.storage, "content": s.content, "type": s.storage_type, "active": s.active}
+                for s in engine.proxmox.list_storages()
+            ]
+            inventory["proxmox_bridges"] = [
+                {"name": b.name, "active": b.active, "vlan_aware": b.vlan_aware}
+                for b in engine.proxmox.list_bridges()
+            ]
+        except Exception as pve_exc:  # noqa: BLE001
+            err = str(pve_exc)
+            if any(k in err for k in ("Name or service not known", "nodename nor servname", "Connect call failed", "Connection refused", "timed out")):
+                messages.warning(
+                    request,
+                    "Proxmox host is not reachable yet. Set proxmox.api_host (IP address) and "
+                    "proxmox.ssh_host in config.yaml, then click ∯ Test & Refresh.",
+                )
+            else:
+                messages.warning(request, f"Proxmox inventory unavailable: {pve_exc}")
+        try:
+            with engine.vmware:
+                inventory["vmware_vms"] = engine.vmware.list_vms()
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as exc:  # noqa: BLE001
+        messages.warning(request, f"Configuration error: {exc}")
+    return inventory
+
+
+def _parse_json_field(raw: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _render_dashboard(
     request: HttpRequest,
     form: MigrationJobForm,
@@ -222,37 +274,7 @@ def _render_dashboard(
 def dashboard(request: HttpRequest) -> HttpResponse:
     directory = request.GET.get("directory", "")
     profile_name = request.GET.get("profile", "")
-    inventory = _empty_inventory()
-    try:
-        engine = get_engine()
-        # Query Proxmox first (storages + bridges) independently of VMware
-        try:
-            inventory["proxmox_storages"] = [
-                {"storage": s.storage, "content": s.content, "type": s.storage_type, "active": s.active}
-                for s in engine.proxmox.list_storages()
-            ]
-            inventory["proxmox_bridges"] = [
-                {"name": b.name, "active": b.active, "vlan_aware": b.vlan_aware}
-                for b in engine.proxmox.list_bridges()
-            ]
-        except Exception as pve_exc:  # noqa: BLE001
-            err = str(pve_exc)
-            if any(k in err for k in ("Name or service not known", "nodename nor servname", "Connect call failed", "Connection refused", "timed out")):
-                messages.warning(
-                    request,
-                    "Proxmox host is not reachable yet. Set proxmox.api_host (IP address) and "
-                    "proxmox.ssh_host in config.yaml, then click \u22ef Test & Refresh.",
-                )
-            else:
-                messages.warning(request, f"Proxmox inventory unavailable: {pve_exc}")
-        # VMware VMs — failure is silent (VMware may not be configured)
-        try:
-            with engine.vmware:
-                inventory["vmware_vms"] = engine.vmware.list_vms()
-        except Exception:  # noqa: BLE001
-            pass
-    except Exception as exc:  # noqa: BLE001
-        messages.warning(request, f"Configuration error: {exc}")
+    inventory = _load_inventory(request)
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     return _render_dashboard(request, _job_form(directory, vm_choices), inventory, _config_form(profile_name))
 
@@ -286,27 +308,7 @@ def launch_job(request: HttpRequest) -> HttpResponse:
         if directory:
             post_data.setlist("source_paths", [directory])
 
-    inventory = _empty_inventory()
-    try:
-        engine = get_engine()
-        try:
-            inventory["proxmox_storages"] = [
-                {"storage": s.storage, "content": s.content, "type": s.storage_type, "active": s.active}
-                for s in engine.proxmox.list_storages()
-            ]
-            inventory["proxmox_bridges"] = [
-                {"name": b.name, "active": b.active, "vlan_aware": b.vlan_aware}
-                for b in engine.proxmox.list_bridges()
-            ]
-        except Exception as pve_exc:  # noqa: BLE001
-            messages.warning(request, f"Proxmox inventory unavailable: {pve_exc}")
-        try:
-            with engine.vmware:
-                inventory["vmware_vms"] = engine.vmware.list_vms()
-        except Exception:  # noqa: BLE001
-            pass
-    except Exception as exc:  # noqa: BLE001
-        messages.warning(request, f"Configuration error: {exc}")
+    inventory = _load_inventory(request)
     vm_choices = [(vm, vm) for vm in inventory.get("vmware_vms", [])]
     form = MigrationJobForm(post_data)
     directory = post_data.get("directory", "")
@@ -319,12 +321,6 @@ def launch_job(request: HttpRequest) -> HttpResponse:
     form.set_bridge_choices(bridge_choices)
 
     if form.is_valid():
-        def _parse_json_field(raw: str) -> dict:
-            try:
-                v = json.loads(raw or "{}")
-                return v if isinstance(v, dict) else {}
-            except Exception:
-                return {}
         job = MigrationJob.objects.create(
             name=form.cleaned_data["name"],
             mode=form.cleaned_data["mode"],
@@ -414,6 +410,7 @@ def job_detail(request: HttpRequest, job_id: int) -> HttpResponse:
         {
             "job": job,
             "compatibility": compatibility,
+            "result_text": _format_json_text(job.result),
         },
     )
 
@@ -686,11 +683,11 @@ def peek_archive(request: HttpRequest) -> JsonResponse:
                     atype = detect_archive_type(archive_path)
                     if atype == "zip":
                         out = engine.proxmox._run(["unzip", "-p", archive_path, name])
-                        parsed = parse_vmx(out)
+                        parsed = parse_vmx(out.stdout or "")
                         vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
                     elif atype == "7z":
                         out = engine.proxmox._run(["7z", "e", "-so", archive_path, name])
-                        parsed = parse_vmx(out)
+                        parsed = parse_vmx(out.stdout or "")
                         vmx_specs = {k: v for k, v in parsed.items() if k != "raw"}
                 except Exception:  # noqa: BLE001
                     pass

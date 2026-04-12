@@ -5,14 +5,15 @@
 {% block content %}
 
 <div class="page-header">
-  <div>
+  <div class="header-left">
     <div class="page-title">Job #{{ job.id }} — {{ job.name }}</div>
     <div class="page-subtitle">
       {% if job.mode == "vmware" %}<span class="badge badge-info">VMware Direct</span>{% else %}<span class="badge badge-muted">Local Disks</span>{% endif %}
-      {% if job.dry_run %}<span class="badge badge-warning" style="margin-left:6px">Dry Run</span>{% else %}<span class="badge badge-error" style="margin-left:6px">Live</span>{% endif %}
+      {% if job.dry_run %}<span class="badge badge-warning job-detail-badge-offset">Dry Run</span>{% else %}<span class="badge badge-error job-detail-badge-offset">Live</span>{% endif %}
     </div>
   </div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap">
+  <div class="header-right">
+  <div class="job-detail-actions">
     {% if job.status == "pending" %}
       <a class="btn btn-primary" href="/jobs/{{ job.id }}/run/">▶ Run Now</a>
     {% endif %}
@@ -23,23 +24,21 @@
 </div>
 
 {# ── Live progress bar (shown while pending or running) ── #}
-<div id="progress-section" style="{% if job.status == 'succeeded' or job.status == 'failed' %}display:none{% endif %}">
-  <div class="panel" style="margin-bottom:20px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <div style="font-weight:600;font-size:0.9rem" id="progress-label">
+<div id="progress-section" class="{% if job.status == 'succeeded' or job.status == 'failed' %}job-detail-hidden{% endif %}">
+  <div class="panel job-detail-progress-card">
+    <div class="job-detail-progress-head">
+      <div class="job-detail-progress-title" id="progress-label">
         {% if job.status == "running" %}⟳ Running…{% else %}… Waiting to start{% endif %}
       </div>
-      <div style="font-size:0.8rem;color:var(--muted)" id="progress-elapsed"></div>
+      <div class="job-detail-progress-elapsed" id="progress-elapsed"></div>
     </div>
-    <div style="background:var(--panel2);border-radius:6px;height:10px;overflow:hidden;position:relative">
+    <div class="job-detail-progress-track">
       <div id="progress-bar"
-           style="height:100%;border-radius:6px;background:linear-gradient(90deg,#4f8ef7,#38bdf8);
-                  width:0%;transition:width 0.4s ease;position:relative;overflow:hidden">
-        <div style="position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.25) 50%,transparent 100%);
-                    animation:shimmer 1.4s infinite;background-size:200% 100%"></div>
+           class="job-detail-progress-bar">
+        <div class="job-detail-progress-shimmer"></div>
       </div>
     </div>
-    <div style="margin-top:8px;font-size:0.78rem;color:var(--muted)" id="progress-sub">
+    <div class="job-detail-progress-elapsed job-detail-progress-sub" id="progress-sub">
       Polling for updates every 2 s…
     </div>
   </div>
@@ -188,9 +187,9 @@
     </div>
     <div id="live-error">
       {% if job.error %}
-        <div style="margin-top:14px">
-          <div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div>
-          <div class="log-box" style="border-color:rgba(239,68,68,.3)">{{ job.error }}</div>
+        <div class="stack-block">
+          <div class="section-eyebrow text-error">Error</div>
+          <div class="log-box log-box-error">{{ job.error }}</div>
         </div>
       {% endif %}
     </div>
@@ -199,8 +198,8 @@
   <div class="panel">
     <div class="panel-title"><span class="icon">✅</span> Result</div>
     <div id="live-result">
-      {% if job.result %}
-        <div class="log-box">{{ job.result|safe }}</div>
+      {% if result_text %}
+        <div class="log-box"><pre class="result-pre">{{ result_text }}</pre></div>
       {% else %}
         <p class="hint">No result data yet.</p>
       {% endif %}
@@ -300,13 +299,13 @@
       // Show error
       if (d.error) {
         const errBox = document.getElementById('live-error');
-        if (errBox) errBox.innerHTML = '<div style="margin-top:14px"><div style="font-size:0.8rem;color:var(--error);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:6px">Error</div><div class="log-box" style="border-color:rgba(239,68,68,.3)">' + escHtml(d.error) + '</div></div>';
+        if (errBox) errBox.innerHTML = '<div class="stack-block"><div class="section-eyebrow text-error">Error</div><div class="log-box log-box-error">' + escHtml(d.error) + '</div></div>';
       }
 
       // Show result
       if (d.result && Object.keys(d.result).length) {
         const res = document.getElementById('live-result');
-        if (res) res.innerHTML = '<div class="log-box"><pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem">' + escHtml(JSON.stringify(d.result, null, 2)) + '</pre></div>';
+        if (res) res.innerHTML = '<div class="log-box"><pre class="result-pre">' + escHtml(JSON.stringify(d.result, null, 2)) + '</pre></div>';
       }
     }
   }

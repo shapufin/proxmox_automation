@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone as dt_timezone
 import json
 import logging
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from .config import AppConfig
 from .disk import DiskConversionError, convert_disk, detect_archive_type, detect_disk_format, qemu_info, resize_disk, get_disk_size_gb, sha256_file
@@ -23,6 +24,7 @@ class DiskImportRecord:
     converted_path: str
     volume_id: str
     slot: str
+    attached: bool = False
     target_storage: str = ""
     source_datastore: str = ""
 
@@ -68,6 +70,410 @@ class MigrationEngine:
             api_verify_ssl=config.proxmox.api_verify_ssl,
         )
         self.remediator = GuestRemediator()
+
+    @staticmethod
+    def _default_migration_ledger() -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "stages": {
+                "vm_created": {
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": "",
+                    "artifacts": {
+                        "vmid": None,
+                        "proxmox_name": "",
+                    },
+                },
+                "disks_exported": {
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": "",
+                    "artifacts": {
+                        "source_paths": [],
+                        "export_paths": [],
+                    },
+                },
+                "disks_imported": {
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": "",
+                    "artifacts": {
+                        "volume_ids": [],
+                        "imported_disks": [],
+                    },
+                },
+                "nics_configured": {
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": "",
+                    "artifacts": {
+                        "networks": [],
+                    },
+                },
+                "remediation_applied": {
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": "",
+                    "artifacts": {
+                        "script_path": "",
+                        "applied": False,
+                    },
+                },
+            },
+            "cleanup": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "deleted_volume_ids": [],
+                "deleted_vmid": None,
+                "errors": [],
+            },
+        }
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.now(dt_timezone.utc).isoformat()
+
+    def _stage(self, ledger: dict[str, Any], stage_name: str) -> dict[str, Any]:
+        stages = ledger.setdefault("stages", {})
+        stage = stages.setdefault(stage_name, {})
+        stage.setdefault("status", "pending")
+        stage.setdefault("started_at", None)
+        stage.setdefault("completed_at", None)
+        stage.setdefault("error", "")
+        stage.setdefault("artifacts", {})
+        return stage
+
+    def reconcile(self, migration_ledger: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        ledger = self._default_migration_ledger()
+        if not isinstance(migration_ledger, dict):
+            return ledger
+
+        ledger["schema_version"] = int(migration_ledger.get("schema_version", ledger["schema_version"]) or ledger["schema_version"])
+        source_stages = migration_ledger.get("stages", {}) if isinstance(migration_ledger.get("stages", {}), dict) else {}
+        for stage_name in ledger["stages"]:
+            source_stage = source_stages.get(stage_name, {}) if isinstance(source_stages, dict) else {}
+            if not isinstance(source_stage, dict):
+                continue
+            stage = ledger["stages"][stage_name]
+            stage["status"] = str(source_stage.get("status", stage["status"]))
+            stage["started_at"] = source_stage.get("started_at", stage["started_at"])
+            stage["completed_at"] = source_stage.get("completed_at", stage["completed_at"])
+            stage["error"] = str(source_stage.get("error", stage["error"]))
+            artifacts = source_stage.get("artifacts", {})
+            if isinstance(artifacts, dict):
+                stage["artifacts"].update(artifacts)
+
+        source_cleanup = migration_ledger.get("cleanup", {}) if isinstance(migration_ledger.get("cleanup", {}), dict) else {}
+        if isinstance(source_cleanup, dict):
+            cleanup = ledger["cleanup"]
+            cleanup["status"] = str(source_cleanup.get("status", cleanup["status"]))
+            cleanup["started_at"] = source_cleanup.get("started_at", cleanup["started_at"])
+            cleanup["completed_at"] = source_cleanup.get("completed_at", cleanup["completed_at"])
+            cleanup["deleted_volume_ids"] = list(source_cleanup.get("deleted_volume_ids", cleanup["deleted_volume_ids"]))
+            cleanup["deleted_vmid"] = source_cleanup.get("deleted_vmid", cleanup["deleted_vmid"])
+            cleanup["errors"] = list(source_cleanup.get("errors", cleanup["errors"]))
+
+        return ledger
+
+    def _persist_ledger(self, ledger: dict[str, Any], persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None) -> None:
+        if persist_ledger is not None:
+            persist_ledger(ledger)
+
+    def _stage_started(self, ledger: dict[str, Any], stage_name: str, persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None) -> dict[str, Any]:
+        stage = self._stage(ledger, stage_name)
+        if not stage.get("started_at"):
+            stage["started_at"] = self._timestamp()
+        stage["status"] = "running"
+        self._persist_ledger(ledger, persist_ledger)
+        return stage
+
+    def _stage_touch(
+        self,
+        ledger: dict[str, Any],
+        stage_name: str,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        **artifacts: Any,
+    ) -> dict[str, Any]:
+        stage = self._stage(ledger, stage_name)
+        stage["artifacts"].update({key: value for key, value in artifacts.items() if value is not None})
+        stage["status"] = stage.get("status") or "running"
+        if not stage.get("started_at"):
+            stage["started_at"] = self._timestamp()
+        self._persist_ledger(ledger, persist_ledger)
+        return stage
+
+    def _stage_succeeded(
+        self,
+        ledger: dict[str, Any],
+        stage_name: str,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        **artifacts: Any,
+    ) -> dict[str, Any]:
+        stage = self._stage(ledger, stage_name)
+        stage["artifacts"].update({key: value for key, value in artifacts.items() if value is not None})
+        if not stage.get("started_at"):
+            stage["started_at"] = self._timestamp()
+        stage["status"] = "succeeded"
+        stage["completed_at"] = self._timestamp()
+        stage["error"] = ""
+        self._persist_ledger(ledger, persist_ledger)
+        return stage
+
+    def _stage_failed(
+        self,
+        ledger: dict[str, Any],
+        stage_name: str,
+        error: str,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> dict[str, Any]:
+        stage = self._stage(ledger, stage_name)
+        if not stage.get("started_at"):
+            stage["started_at"] = self._timestamp()
+        stage["status"] = "failed"
+        stage["completed_at"] = self._timestamp()
+        stage["error"] = error
+        self._persist_ledger(ledger, persist_ledger)
+        return stage
+
+    @staticmethod
+    def _stage_succeeded_flag(ledger: dict[str, Any], stage_name: str) -> bool:
+        stage = ledger.get("stages", {}).get(stage_name, {})
+        return str(stage.get("status", "")).lower() == "succeeded"
+
+    @staticmethod
+    def _stage_artifacts(ledger: dict[str, Any], stage_name: str) -> dict[str, Any]:
+        stage = ledger.get("stages", {}).get(stage_name, {})
+        artifacts = stage.get("artifacts", {}) if isinstance(stage, dict) else {}
+        return artifacts if isinstance(artifacts, dict) else {}
+
+    def _cleanup_state(self, ledger: dict[str, Any]) -> dict[str, Any]:
+        cleanup = ledger.setdefault("cleanup", {})
+        cleanup.setdefault("status", "pending")
+        cleanup.setdefault("started_at", None)
+        cleanup.setdefault("completed_at", None)
+        cleanup.setdefault("deleted_volume_ids", [])
+        cleanup.setdefault("deleted_vmid", None)
+        cleanup.setdefault("errors", [])
+        return cleanup
+
+    def _resolve_workdir(
+        self,
+        ledger: dict[str, Any],
+        vm_name: str,
+        staging_dir: Optional[Path] = None,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> Path:
+        stored = self._stage_artifacts(ledger, "disks_exported").get("working_dir")
+        candidate = Path(stored) if stored else staging_dir
+        if candidate is None:
+            candidate = Path(tempfile.mkdtemp(prefix=f"pve-migrate-{vm_name}-"))
+            self._stage_touch(ledger, "disks_exported", persist_ledger, working_dir=str(candidate))
+            return candidate
+        candidate = Path(candidate)
+        candidate.mkdir(parents=True, exist_ok=True)
+        if not stored:
+            self._stage_touch(ledger, "disks_exported", persist_ledger, working_dir=str(candidate))
+        return candidate
+
+    @staticmethod
+    def _ledger_import_records(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+        imported_stage = ledger.get("stages", {}).get("disks_imported", {})
+        if not isinstance(imported_stage, dict):
+            return []
+        artifacts = imported_stage.get("artifacts", {})
+        if not isinstance(artifacts, dict):
+            return []
+        records = artifacts.get("imported_disks", [])
+        return [record for record in records if isinstance(record, dict)]
+
+    @staticmethod
+    def _path_key(path: str | Path) -> str:
+        return str(Path(path).expanduser().resolve())
+
+    def _find_import_record(
+        self,
+        ledger: dict[str, Any],
+        source_path: str | Path,
+        index: int,
+    ) -> Optional[dict[str, Any]]:
+        source_key = self._path_key(source_path)
+        slot = f"scsi{index}"
+        for record in self._ledger_import_records(ledger):
+            record_source = record.get("source") or record.get("local_path") or record.get("converted_path")
+            if record_source and self._path_key(record_source) == source_key:
+                return record
+            if str(record.get("slot", "")).strip() == slot:
+                return record
+        return None
+
+    def _record_import(
+        self,
+        ledger: dict[str, Any],
+        record: dict[str, Any],
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> dict[str, Any]:
+        stage = self._stage(ledger, "disks_imported")
+        records = stage["artifacts"].setdefault("imported_disks", [])
+        volume_ids = stage["artifacts"].setdefault("volume_ids", [])
+        normalized_record = {
+            "source": str(record.get("source", "")),
+            "local_path": str(record.get("local_path", "")),
+            "converted_path": str(record.get("converted_path", "")),
+            "volume_id": str(record.get("volume_id", "")),
+            "slot": str(record.get("slot", "")),
+            "attached": bool(record.get("attached", False)),
+            "target_storage": str(record.get("target_storage", "")),
+            "source_datastore": str(record.get("source_datastore", "")),
+        }
+        source_key = self._path_key(normalized_record["source"]) if normalized_record["source"] else ""
+        replaced = False
+        for index, existing in enumerate(records):
+            if not isinstance(existing, dict):
+                continue
+            existing_source = str(existing.get("source", "")).strip()
+            existing_slot = str(existing.get("slot", "")).strip()
+            if source_key and existing_source and self._path_key(existing_source) == source_key:
+                records[index] = normalized_record
+                replaced = True
+                break
+            if normalized_record["slot"] and existing_slot == normalized_record["slot"]:
+                records[index] = normalized_record
+                replaced = True
+                break
+        if not replaced:
+            records.append(normalized_record)
+        if normalized_record["volume_id"] and normalized_record["volume_id"] not in volume_ids:
+            volume_ids.append(normalized_record["volume_id"])
+        self._persist_ledger(ledger, persist_ledger)
+        return normalized_record
+
+    @staticmethod
+    def _ledger_network_records(ledger: dict[str, Any]) -> list[dict[str, Any]]:
+        nic_stage = ledger.get("stages", {}).get("nics_configured", {})
+        if not isinstance(nic_stage, dict):
+            return []
+        artifacts = nic_stage.get("artifacts", {})
+        if not isinstance(artifacts, dict):
+            return []
+        records = artifacts.get("networks", [])
+        return [record for record in records if isinstance(record, dict)]
+
+    def _find_network_record(
+        self,
+        ledger: dict[str, Any],
+        index: int,
+    ) -> Optional[dict[str, Any]]:
+        for record in self._ledger_network_records(ledger):
+            if int(record.get("index", -1) or -1) == index:
+                return record
+        return None
+
+    def _record_network(
+        self,
+        ledger: dict[str, Any],
+        record: dict[str, Any],
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> dict[str, Any]:
+        stage = self._stage(ledger, "nics_configured")
+        records = stage["artifacts"].setdefault("networks", [])
+        normalized_record = {
+            "index": int(record.get("index", 0) or 0),
+            "label": str(record.get("label", "")),
+            "bridge": str(record.get("bridge", "")),
+            "macaddr": str(record.get("macaddr", "")),
+            "model": str(record.get("model", "virtio")),
+            "vlan": record.get("vlan"),
+        }
+        replaced = False
+        for pos, existing in enumerate(records):
+            if not isinstance(existing, dict):
+                continue
+            if int(existing.get("index", -1) or -1) == normalized_record["index"]:
+                records[pos] = normalized_record
+                replaced = True
+                break
+        if not replaced:
+            records.append(normalized_record)
+        self._persist_ledger(ledger, persist_ledger)
+        return normalized_record
+
+    def _cleanup_failed_resources(
+        self,
+        ledger: dict[str, Any],
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+    ) -> None:
+        cleanup = self._cleanup_state(ledger)
+        if not cleanup.get("started_at"):
+            cleanup["started_at"] = self._timestamp()
+        cleanup["status"] = "running"
+        self._persist_ledger(ledger, persist_ledger)
+
+        deleted_volume_ids: list[str] = [str(volume_id) for volume_id in cleanup.get("deleted_volume_ids", []) if str(volume_id).strip()]
+        deleted_seen = set(deleted_volume_ids)
+        errors: list[str] = [str(item) for item in cleanup.get("errors", []) if str(item).strip()]
+
+        vm_stage = ledger.get("stages", {}).get("vm_created", {})
+        vm_artifacts = vm_stage.get("artifacts", {}) if isinstance(vm_stage, dict) else {}
+        created_vmid = vm_artifacts.get("vmid") if isinstance(vm_artifacts, dict) else None
+        if self.config.migration.rollback_on_failure and self._stage_succeeded_flag(ledger, "vm_created") and created_vmid is not None:
+            try:
+                self.proxmox.destroy_vm(int(created_vmid))
+                cleanup["deleted_vmid"] = int(created_vmid)
+                vm_stage = self._stage(ledger, "vm_created")
+                vm_stage["status"] = "failed"
+                vm_stage["completed_at"] = self._timestamp()
+                vm_stage["error"] = "rolled back during cleanup"
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"vm {created_vmid}: {exc}")
+
+        imported_stage = ledger.get("stages", {}).get("disks_imported", {})
+        imported_artifacts = imported_stage.get("artifacts", {}) if isinstance(imported_stage, dict) else {}
+        candidates: list[str] = []
+        if isinstance(imported_artifacts, dict):
+            for volume_id in imported_artifacts.get("volume_ids", []) or []:
+                text = str(volume_id).strip()
+                if text:
+                    candidates.append(text)
+            for record in imported_artifacts.get("imported_disks", []) or []:
+                if isinstance(record, dict):
+                    volume_id = str(record.get("volume_id", "")).strip()
+                    if volume_id:
+                        candidates.append(volume_id)
+
+        for volume_id in dict.fromkeys(candidates):
+            if volume_id in deleted_seen:
+                continue
+            try:
+                self.proxmox.remove_volume(volume_id)
+                deleted_volume_ids.append(volume_id)
+                deleted_seen.add(volume_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"volume {volume_id}: {exc}")
+
+        cleanup["deleted_volume_ids"] = deleted_volume_ids
+        cleanup["errors"] = errors
+        cleanup["status"] = "failed" if errors else "succeeded"
+        cleanup["completed_at"] = self._timestamp()
+        if not errors:
+            self._reset_ledger_for_retry(ledger)
+        self._persist_ledger(ledger, persist_ledger)
+
+    def _reset_ledger_for_retry(self, ledger: dict[str, Any]) -> None:
+        template = self._default_migration_ledger()
+        for stage_name, stage_template in template["stages"].items():
+            stage = self._stage(ledger, stage_name)
+            stage["status"] = "pending"
+            stage["started_at"] = None
+            stage["completed_at"] = None
+            stage["error"] = ""
+            stage["artifacts"] = dict(stage_template.get("artifacts", {}))
 
     def _resolve_firmware(self, vm: VmwareVmSpec) -> FirmwareMode:
         if self.config.proxmox.boot_firmware != FirmwareMode.AUTO:
@@ -757,6 +1163,9 @@ class MigrationEngine:
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
         compatibility: Optional[dict[str, Any]] = None,
+        migration_ledger: Optional[dict[str, Any]] = None,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        staging_dir: Optional[Path] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -774,10 +1183,19 @@ class MigrationEngine:
             fallback_nic_bridge=fallback_nic_bridge,
         )
         warnings = list(dict.fromkeys((compatibility.get("warnings") or []) + (compatibility.get("recommendations") or [])))
+
+        ledger = self.reconcile(migration_ledger)
+        if persist_ledger is not None:
+            persist_ledger(ledger)
+
+        ledger_vmid = self._stage_artifacts(ledger, "vm_created").get("vmid")
+        if ledger_vmid not in (None, ""):
+            vmid = int(ledger_vmid)
+        else:
+            vmid = vmid or self.proxmox.next_vmid()
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
-        vmid = vmid or self.proxmox.next_vmid()
         path_diagnostics: list[str] = []
         source_paths = self._resolve_local_disk_paths(disk_paths, vm, path_diagnostics)
         self.logger.info(
@@ -837,7 +1255,7 @@ class MigrationEngine:
             len(source_paths),
             target_storage,
         )
-        target_dir = Path(tempfile.mkdtemp(prefix=f"pve-local-{vm.name}-"))
+        target_dir = self._resolve_workdir(ledger, vm.name, staging_dir=staging_dir, persist_ledger=persist_ledger)
         import_records: list[DiskImportRecord] = []
         migration_commands: list[str] = []
         remediation_path = target_dir / f"{vm.name}.remediation.sh"
@@ -861,25 +1279,52 @@ class MigrationEngine:
                     encoding="utf-8",
                 )
 
-            proxmox_name = self.proxmox.create_vm(
-                vmid=vmid,
-                name=vm.name,
-                memory_mb=vm.memory_mb,
-                cores=vm.cpu_count,
-                sockets=1,
-                bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
-                scsihw=self.config.proxmox.scsi_controller,
-                agent=True,
-            )
+            if not self._stage_succeeded_flag(ledger, "disks_exported"):
+                self._stage_started(ledger, "disks_exported", persist_ledger)
+                self._stage_succeeded(
+                    ledger,
+                    "disks_exported",
+                    persist_ledger,
+                    source_paths=[str(path) for path in source_paths],
+                    export_paths=[str(path) for path in source_paths],
+                    working_dir=str(target_dir),
+                )
+
+            vm_stage = self._stage(ledger, "vm_created")
+            vm_artifacts = vm_stage.get("artifacts", {}) if isinstance(vm_stage, dict) else {}
+            proxmox_name = str(vm_artifacts.get("proxmox_name") or "")
+            if self._stage_succeeded_flag(ledger, "vm_created") and vmid is not None:
+                self.logger.info("Reusing previously created VM %s (VMID %s)", proxmox_name or vm.name, vmid)
+            else:
+                self._stage_started(ledger, "vm_created", persist_ledger)
+                proxmox_name = self.proxmox.create_vm(
+                    vmid=vmid,
+                    name=vm.name,
+                    memory_mb=vm.memory_mb,
+                    cores=vm.cpu_count,
+                    sockets=1,
+                    bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
+                    scsihw=self.config.proxmox.scsi_controller,
+                    agent=True,
+                )
+                efi_disk_added = False
+                if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
+                    self.proxmox.add_efi_disk(vmid, target_storage, target_format)
+                    efi_disk_added = True
+                self._stage_succeeded(
+                    ledger,
+                    "vm_created",
+                    persist_ledger,
+                    vmid=vmid,
+                    proxmox_name=proxmox_name,
+                    efi_disk_added=efi_disk_added,
+                )
             if proxmox_name != vm.name:
                 self.logger.warning(
                     "Proxmox adjusted VM name for %s to %s to satisfy naming rules",
                     vm.name,
                     proxmox_name,
                 )
-
-            if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
-                self.proxmox.add_efi_disk(vmid, target_storage, target_format)
 
             effective_nics = list(vm.nics)
             if not effective_nics:
@@ -901,13 +1346,44 @@ class MigrationEngine:
 
             for index, nic in enumerate(effective_nics):
                 bridge_override = fallback_nic_bridge if (not vm.nics and index == 0 and fallback_nic_bridge) else bridge
+                ledger_network = self._find_network_record(ledger, index)
+                if ledger_network is not None:
+                    continue
                 bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
+                self._stage_started(ledger, "nics_configured", persist_ledger)
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
+                self._record_network(
+                    ledger,
+                    {
+                        "index": index,
+                        "label": nic.label,
+                        "bridge": bridge_name,
+                        "macaddr": mac,
+                        "model": "virtio",
+                        "vlan": getattr(nic, "vlan_id", None),
+                    },
+                    persist_ledger,
+                )
+            self._stage_succeeded(ledger, "nics_configured", persist_ledger, networks=self._ledger_network_records(ledger))
 
             vmx_disk_specs = list(vm.disks)
             for index, source_path in enumerate(source_paths):
                 disk_spec = vmx_disk_specs[index] if index < len(vmx_disk_specs) else None
+                existing_record = self._find_import_record(ledger, source_path, index)
+                if existing_record is not None and str(existing_record.get("volume_id", "")).strip():
+                    slot = str(existing_record.get("slot", f"scsi{index}"))
+                    if not bool(existing_record.get("attached", False)):
+                        self._stage_started(ledger, "disks_imported", persist_ledger)
+                        attach_command = self.proxmox.attach_disk(vmid, str(existing_record["volume_id"]), slot=slot)
+                        migration_commands.append(attach_command)
+                        existing_record = self._record_import(
+                            ledger,
+                            {**existing_record, "attached": True},
+                            persist_ledger,
+                        )
+                    import_records.append(DiskImportRecord(**existing_record))
+                    continue
                 source_format = detect_disk_format(source_path) or source_path.suffix.lower().lstrip(".") or "vmdk"
                 converted_path = target_dir / f"{source_path.stem}.{target_format.value}"
                 if source_format == target_format.value:
@@ -962,34 +1438,46 @@ class MigrationEngine:
                 volume_id = self.proxmox.import_disk(vmid, converted_path, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                self._stage_started(ledger, "disks_imported", persist_ledger)
                 migration_commands.append(
                     f"qm importdisk {vmid} {converted_path} {disk_target_storage} --format {target_format.value}"
                 )
                 migration_commands.append(attach_command)
-                import_records.append(
-                    DiskImportRecord(
-                        source=str(source_path),
-                        local_path=str(source_path),
-                        converted_path=str(converted_path),
-                        volume_id=volume_id,
-                        slot=slot,
-                        target_storage=disk_target_storage,
-                        source_datastore=getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
-                    )
+                import_record = self._record_import(
+                    ledger,
+                    {
+                        "source": str(source_path),
+                        "local_path": str(source_path),
+                        "converted_path": str(converted_path),
+                        "volume_id": volume_id,
+                        "slot": slot,
+                        "attached": True,
+                        "target_storage": disk_target_storage,
+                        "source_datastore": getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
+                    },
+                    persist_ledger,
                 )
+                import_records.append(DiskImportRecord(**import_record))
+
+            if import_records:
+                self._stage_succeeded(ledger, "disks_imported", persist_ledger, imported_disks=self._ledger_import_records(ledger), volume_ids=self._stage_artifacts(ledger, "disks_imported").get("volume_ids", []))
 
             self.proxmox.set_boot_order(vmid, "scsi0")
 
-            if self.config.migration.guest_remediation:
+            if self.config.migration.guest_remediation and not self._stage_succeeded_flag(ledger, "remediation_applied"):
+                self._stage_started(ledger, "remediation_applied", persist_ledger)
                 self.remediator.write_script(
                     remediation_path,
                     vm,
                     rewrite_fstab=self.config.migration.guest_rewrite_fstab,
                     install_qemu_agent=self.config.migration.guest_install_qemu_agent,
                 )
+                self._stage_succeeded(ledger, "remediation_applied", persist_ledger, script_path=str(remediation_path), applied=True)
 
             if start_after_import:
-                self.proxmox.start_vm(vmid)
+                status_payload = self.proxmox.status(vmid)
+                if str(status_payload.get("status") or status_payload.get("state") or "").lower() != "running":
+                    self.proxmox.start_vm(vmid)
 
             return MigrationResult(
                 name=vm.name,
@@ -1010,8 +1498,8 @@ class MigrationEngine:
         except Exception:
             if self.config.migration.rollback_on_failure:
                 try:
-                    self.proxmox.destroy_vm(vmid)
-                except Exception as rollback_error:
+                    self._cleanup_failed_resources(ledger, persist_ledger)
+                except Exception as rollback_error:  # noqa: BLE001
                     self.logger.error("Rollback failed for VMID %s: %s", vmid, rollback_error)
             raise
 
@@ -1031,6 +1519,9 @@ class MigrationEngine:
         disk_resize_map: Optional[dict[str, int]] = None,
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
+        migration_ledger: Optional[dict[str, Any]] = None,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        staging_dir: Optional[Path] = None,
     ) -> MigrationResult:
         self.proxmox.ensure_prerequisites()
         dry_run = self.config.migration.dry_run if dry_run is None else dry_run
@@ -1065,6 +1556,9 @@ class MigrationEngine:
             allow_disk_shrink=allow_disk_shrink,
             fallback_nic_bridge=fallback_nic_bridge,
             compatibility=compatibility,
+            migration_ledger=migration_ledger,
+            persist_ledger=persist_ledger,
+            staging_dir=staging_dir,
         )
 
     def _migrate_vmware(
@@ -1084,11 +1578,13 @@ class MigrationEngine:
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
         compatibility: Optional[dict[str, Any]] = None,
+        migration_ledger: Optional[dict[str, Any]] = None,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        staging_dir: Optional[Path] = None,
     ) -> MigrationResult:
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
         firmware = self._resolve_firmware(vm)
-        vmid = vmid or self.proxmox.next_vmid()
         network_bridge_override = bridge
 
         if dry_run:
@@ -1102,7 +1598,17 @@ class MigrationEngine:
                 details={"dry_run": True, "source_mode": "vmware", "compatibility": compatibility or {}},
             )
 
-        target_dir = Path(tempfile.mkdtemp(prefix=f"pve-migrate-{vm.name}-"))
+        ledger = self.reconcile(migration_ledger)
+        if persist_ledger is not None:
+            persist_ledger(ledger)
+
+        ledger_vmid = self._stage_artifacts(ledger, "vm_created").get("vmid")
+        if ledger_vmid not in (None, ""):
+            vmid = int(ledger_vmid)
+        else:
+            vmid = vmid or self.proxmox.next_vmid()
+
+        target_dir = self._resolve_workdir(ledger, vm.name, staging_dir=staging_dir, persist_ledger=persist_ledger)
         manifest_path = target_dir / f"{vm.name}.manifest.json"
         import_records: list[DiskImportRecord] = []
         migration_commands: list[str] = []
@@ -1111,25 +1617,63 @@ class MigrationEngine:
         try:
             self.logger.info("Downloading disks for %s into %s", vm.name, target_dir)
             with self.vmware:
-                self.vmware.export_manifest(vm, manifest_path)
-                downloaded = self.vmware.download_vm_disks(vm, target_dir)
+                if not self._stage_succeeded_flag(ledger, "disks_exported"):
+                    self._stage_started(ledger, "disks_exported", persist_ledger)
+                    self.vmware.export_manifest(vm, manifest_path)
+                    downloaded = self.vmware.download_vm_disks(vm, target_dir)
+                    self._stage_succeeded(
+                        ledger,
+                        "disks_exported",
+                        persist_ledger,
+                        source_paths=[str(path) for path in downloaded],
+                        export_paths=[str(path) for path in downloaded],
+                        working_dir=str(target_dir),
+                    )
+                else:
+                    downloaded = [Path(path) for path in self._stage_artifacts(ledger, "disks_exported").get("export_paths", []) if str(path).strip()]
+                    if not downloaded or not all(path.exists() for path in downloaded):
+                        downloaded = self.vmware.download_vm_disks(vm, target_dir)
+                        self._stage_succeeded(
+                            ledger,
+                            "disks_exported",
+                            persist_ledger,
+                            source_paths=[str(path) for path in downloaded],
+                            export_paths=[str(path) for path in downloaded],
+                            working_dir=str(target_dir),
+                        )
 
             if write_manifest:
                 manifest_path.write_text(json.dumps({"vmware": asdict(vm), "target": {"storage": target_storage, "format": target_format.value, "firmware": firmware.value, "vmid": vmid}}, indent=2, sort_keys=True), encoding="utf-8")
 
-            self.proxmox.create_vm(
-                vmid=vmid,
-                name=vm.name,
-                memory_mb=vm.memory_mb,
-                cores=vm.cpu_count,
-                sockets=1,
-                bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
-                scsihw=self.config.proxmox.scsi_controller,
-                agent=True,
-            )
-
-            if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
-                self.proxmox.add_efi_disk(vmid, target_storage, target_format)
+            vm_stage = self._stage(ledger, "vm_created")
+            vm_artifacts = vm_stage.get("artifacts", {}) if isinstance(vm_stage, dict) else {}
+            proxmox_name = str(vm_artifacts.get("proxmox_name") or "")
+            if self._stage_succeeded_flag(ledger, "vm_created") and vmid is not None:
+                self.logger.info("Reusing previously created VM %s (VMID %s)", proxmox_name or vm.name, vmid)
+            else:
+                self._stage_started(ledger, "vm_created", persist_ledger)
+                proxmox_name = self.proxmox.create_vm(
+                    vmid=vmid,
+                    name=vm.name,
+                    memory_mb=vm.memory_mb,
+                    cores=vm.cpu_count,
+                    sockets=1,
+                    bios="ovmf" if firmware == FirmwareMode.UEFI else "seabios",
+                    scsihw=self.config.proxmox.scsi_controller,
+                    agent=True,
+                )
+                efi_disk_added = False
+                if firmware == FirmwareMode.UEFI and self.config.proxmox.create_efi_disk:
+                    self.proxmox.add_efi_disk(vmid, target_storage, target_format)
+                    efi_disk_added = True
+                self._stage_succeeded(
+                    ledger,
+                    "vm_created",
+                    persist_ledger,
+                    vmid=vmid,
+                    proxmox_name=proxmox_name,
+                    efi_disk_added=efi_disk_added,
+                )
 
             effective_nics = list(vm.nics)
             if not effective_nics:
@@ -1151,12 +1695,43 @@ class MigrationEngine:
 
             for index, nic in enumerate(effective_nics):
                 bridge_override = fallback_nic_bridge if (not vm.nics and index == 0 and fallback_nic_bridge) else network_bridge_override
+                ledger_network = self._find_network_record(ledger, index)
+                if ledger_network is not None:
+                    continue
                 bridge_name = self._resolve_nic_bridge(nic, index, bridge_override, nic_bridge_map)
                 mac = nic.mac_address if self.config.proxmox.preserve_mac else ""
+                self._stage_started(ledger, "nics_configured", persist_ledger)
                 self.proxmox.add_network(vmid, index, bridge_name, macaddr=mac, model="virtio")
+                self._record_network(
+                    ledger,
+                    {
+                        "index": index,
+                        "label": nic.label,
+                        "bridge": bridge_name,
+                        "macaddr": mac,
+                        "model": "virtio",
+                        "vlan": getattr(nic, "vlan_id", None),
+                    },
+                    persist_ledger,
+                )
+            self._stage_succeeded(ledger, "nics_configured", persist_ledger, networks=self._ledger_network_records(ledger))
 
             for index, disk_path in enumerate(downloaded):
                 disk_spec = vm.disks[index] if index < len(vm.disks) else None
+                existing_record = self._find_import_record(ledger, disk_path, index)
+                if existing_record is not None and str(existing_record.get("volume_id", "")).strip():
+                    slot = str(existing_record.get("slot", f"scsi{index}"))
+                    if not bool(existing_record.get("attached", False)):
+                        self._stage_started(ledger, "disks_imported", persist_ledger)
+                        attach_command = self.proxmox.attach_disk(vmid, str(existing_record["volume_id"]), slot=slot)
+                        migration_commands.append(attach_command)
+                        existing_record = self._record_import(
+                            ledger,
+                            {**existing_record, "attached": True},
+                            persist_ledger,
+                        )
+                    import_records.append(DiskImportRecord(**existing_record))
+                    continue
                 source_format = detect_disk_format(disk_path) or Path(disk_path).suffix.lower().lstrip(".") or "vmdk"
                 converted_path = target_dir / f"{disk_path.stem}.{target_format.value}"
                 try:
@@ -1196,34 +1771,46 @@ class MigrationEngine:
                 volume_id = self.proxmox.import_disk(vmid, source_for_import, disk_target_storage, target_format)
                 slot = f"scsi{index}"
                 attach_command = self.proxmox.attach_disk(vmid, volume_id, slot=slot)
+                self._stage_started(ledger, "disks_imported", persist_ledger)
                 migration_commands.append(
                     f"qm importdisk {vmid} {source_for_import} {disk_target_storage} --format {target_format.value}"
                 )
                 migration_commands.append(attach_command)
-                import_records.append(
-                    DiskImportRecord(
-                        source=str(disk_path),
-                        local_path=str(disk_path),
-                        converted_path=str(converted_path),
-                        volume_id=volume_id,
-                        slot=slot,
-                        target_storage=disk_target_storage,
-                        source_datastore=getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
-                    )
+                import_record = self._record_import(
+                    ledger,
+                    {
+                        "source": str(disk_path),
+                        "local_path": str(disk_path),
+                        "converted_path": str(converted_path),
+                        "volume_id": volume_id,
+                        "slot": slot,
+                        "attached": True,
+                        "target_storage": disk_target_storage,
+                        "source_datastore": getattr(disk_spec, "datastore", "") if disk_spec is not None else "",
+                    },
+                    persist_ledger,
                 )
+                import_records.append(DiskImportRecord(**import_record))
+
+            if import_records:
+                self._stage_succeeded(ledger, "disks_imported", persist_ledger, imported_disks=self._ledger_import_records(ledger), volume_ids=self._stage_artifacts(ledger, "disks_imported").get("volume_ids", []))
 
             self.proxmox.set_boot_order(vmid, "scsi0")
 
-            if self.config.migration.guest_remediation:
+            if self.config.migration.guest_remediation and not self._stage_succeeded_flag(ledger, "remediation_applied"):
+                self._stage_started(ledger, "remediation_applied", persist_ledger)
                 self.remediator.write_script(
                     remediation_path,
                     vm,
                     rewrite_fstab=self.config.migration.guest_rewrite_fstab,
                     install_qemu_agent=self.config.migration.guest_install_qemu_agent,
                 )
+                self._stage_succeeded(ledger, "remediation_applied", persist_ledger, script_path=str(remediation_path), applied=True)
 
             if start_after_import:
-                self.proxmox.start_vm(vmid)
+                status_payload = self.proxmox.status(vmid)
+                if str(status_payload.get("status") or status_payload.get("state") or "").lower() != "running":
+                    self.proxmox.start_vm(vmid)
 
             if self.config.migration.guest_remediation and self.config.ssh.enabled and self.config.ssh.host:
                 self.remediator.run_over_ssh(
@@ -1252,12 +1839,12 @@ class MigrationEngine:
                     "migration_commands": migration_commands,
                     "disks": [asdict(item) for item in import_records],
                     "compatibility": compatibility or {},
-                },
+                }
             )
         except Exception:
             if self.config.migration.rollback_on_failure:
                 try:
-                    self.proxmox.destroy_vm(vmid)
+                    self._cleanup_failed_resources(ledger, persist_ledger)
                 except Exception as rollback_error:
                     self.logger.error("Rollback failed for VMID %s: %s", vmid, rollback_error)
             raise
@@ -1283,6 +1870,9 @@ class MigrationEngine:
         disk_resize_map: Optional[dict[str, int]] = None,
         allow_disk_shrink: bool = False,
         fallback_nic_bridge: Optional[str] = None,
+        migration_ledger: Optional[dict[str, Any]] = None,
+        persist_ledger: Optional[Callable[[dict[str, Any]], None]] = None,
+        staging_dir: Optional[Path] = None,
     ) -> MigrationResult:
         """High-level entry point for local-disk migration with archive support.
 
@@ -1345,6 +1935,9 @@ class MigrationEngine:
                 disk_resize_map=disk_resize_map,
                 allow_disk_shrink=allow_disk_shrink,
                 fallback_nic_bridge=fallback_nic_bridge,
+                migration_ledger=migration_ledger,
+                persist_ledger=persist_ledger,
+                staging_dir=staging_dir,
             )
         finally:
             for tmp in host_temp_dirs:

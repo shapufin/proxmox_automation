@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from django.db import models
 
 
@@ -60,6 +62,71 @@ class MigrationMode(models.TextChoices):
     LOCAL = "local", "Local disks"
 
 
+def default_migration_ledger() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "stages": {
+            "vm_created": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "error": "",
+                "artifacts": {
+                    "vmid": None,
+                    "proxmox_name": "",
+                },
+            },
+            "disks_exported": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "error": "",
+                "artifacts": {
+                    "source_paths": [],
+                    "export_paths": [],
+                },
+            },
+            "disks_imported": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "error": "",
+                "artifacts": {
+                    "volume_ids": [],
+                    "imported_disks": [],
+                },
+            },
+            "nics_configured": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "error": "",
+                "artifacts": {
+                    "networks": [],
+                },
+            },
+            "remediation_applied": {
+                "status": "pending",
+                "started_at": None,
+                "completed_at": None,
+                "error": "",
+                "artifacts": {
+                    "script_path": "",
+                    "applied": False,
+                },
+            },
+        },
+        "cleanup": {
+            "status": "pending",
+            "started_at": None,
+            "completed_at": None,
+            "deleted_volume_ids": [],
+            "deleted_vmid": None,
+            "errors": [],
+        },
+    }
+
+
 class MigrationJob(models.Model):
     name = models.CharField(max_length=255)
     mode = models.CharField(max_length=20, choices=MigrationMode.choices, default=MigrationMode.LOCAL)
@@ -78,6 +145,7 @@ class MigrationJob(models.Model):
     disk_resize_map = models.JSONField(default=dict, blank=True)
     allow_disk_shrink = models.BooleanField(default=False)
     fallback_nic_bridge = models.CharField(max_length=255, blank=True, default="")
+    migration_ledger = models.JSONField(default=default_migration_ledger, blank=True)
     vmx_specs = models.JSONField(default=dict, blank=True)
     dry_run = models.BooleanField(default=True)
     start_after_import = models.BooleanField(default=True)

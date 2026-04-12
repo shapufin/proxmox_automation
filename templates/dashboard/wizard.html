@@ -14,7 +14,7 @@
 <div class="wz-layout">
 
   {# ── LEFT: Step indicators ── #}
-  <div class="wz-stepper panel" style="padding:20px 16px">
+  <div class="wz-stepper panel wz-stepper-card">
     <div class="wz-step-indicator active" id="ind-1" onclick="gotoStep(1)">
       <div class="wz-step-num">1</div>
       <div class="wz-step-label">Mode &amp; Profile</div>
@@ -41,15 +41,15 @@
       <div class="panel-title"><span class="icon">⚙</span> Step 1 — Mode &amp; Profile</div>
 
       <div class="field">
-        <label for="wz_name">Job name <span style="color:var(--error)">*</span></label>
+        <label for="wz_name">Job name <span class="text-error">*</span></label>
         <input type="text" id="wz_name" class="form-input" placeholder="e.g. web-server-01"
                oninput="syncField('name', this.value)" />
         <span class="help">A short recognisable label for this migration.</span>
-        <div id="err_name" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        <div id="err_name" class="wz-error"></div>
       </div>
 
       <div class="field">
-        <label for="wz_mode">Migration mode <span style="color:var(--error)">*</span></label>
+        <label for="wz_mode">Migration mode <span class="text-error">*</span></label>
         <select id="wz_mode" class="form-select" onchange="onModeChange(this.value)">
           <option value="local">Local Disks — import VMDK files already on the Proxmox host</option>
           <option value="vmware">VMware Direct — pull live from vCenter / ESXi</option>
@@ -62,9 +62,9 @@
 
       {# Registered Proxmox host #}
       <div class="field">
-        <label for="wz_proxmox_host">Proxmox host <span style="color:var(--error)">*</span></label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="wz_proxmox_host" class="form-select" style="flex:1" onchange="onProxmoxHostChange(this.value)">
+        <label for="wz_proxmox_host">Proxmox host <span class="text-error">*</span></label>
+        <div class="wz-flex-row">
+          <select id="wz_proxmox_host" class="form-select wz-flex-grow" onchange="onProxmoxHostChange(this.value)">
             <option value="">— select a registered host —</option>
             {% for h in proxmox_hosts %}
               <option value="{{ h.id }}"
@@ -77,22 +77,22 @@
               </option>
             {% endfor %}
           </select>
-          <a href="/hosts/" class="btn btn-secondary btn-sm" style="white-space:nowrap">+ Register</a>
+          <a href="/hosts/" class="btn btn-secondary btn-sm wz-nowrap">+ Register</a>
         </div>
         {% if not proxmox_hosts %}
-          <div style="color:var(--warning);font-size:0.82rem;margin-top:4px">
+          <div class="wz-warning-note">
             No Proxmox hosts registered yet. <a href="/hosts/">Register one first →</a>
           </div>
         {% endif %}
         <span class="help">Registered Proxmox connection. <a href="/hosts/">Manage hosts</a>.</span>
-        <div id="err_proxmox_host" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        <div id="err_proxmox_host" class="wz-error"></div>
       </div>
 
       {# VMware host — only shown in VMware mode #}
-      <div class="field" id="vmware-host-field" style="display:none">
+      <div class="field wz-hidden" id="vmware-host-field">
         <label for="wz_vmware_host">VMware host</label>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="wz_vmware_host" class="form-select" style="flex:1" onchange="onVmwareHostChange(this.value)">
+        <div class="wz-flex-row">
+          <select id="wz_vmware_host" class="form-select wz-flex-grow" onchange="onVmwareHostChange(this.value)">
             <option value="">— select a registered host —</option>
             {% for h in vmware_hosts %}
               <option value="{{ h.id }}" data-label="{{ h.label }}" data-host="{{ h.host }}">
@@ -106,9 +106,9 @@
       </div>
 
       {# Legacy config profile fallback #}
-      <details style="margin-top:8px">
-        <summary style="font-size:0.82rem;color:var(--muted);cursor:pointer">Advanced: use a config.yaml profile instead</summary>
-        <div class="field" style="margin-top:10px">
+      <details class="wz-help-block">
+        <summary class="wz-muted-small wz-pointer">Advanced: use a config.yaml profile instead</summary>
+        <div class="field wz-help-block">
           <label for="wz_profile">Config profile</label>
           <select id="wz_profile" class="form-select" onchange="syncField('config_profile', this.value)">
             <option value="">Default config (config.yaml)</option>
@@ -130,27 +130,27 @@
       <div class="panel-title"><span class="icon">📦</span> Step 2 — Source</div>
 
       {# VMware direct — VM picker #}
-      <div id="src-vmware" style="display:none">
+      <div id="src-vmware" class="wz-hidden">
         <div class="field">
           <label>VMware VM to migrate</label>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select id="wz_vm_name" class="form-select" onchange="syncField('vm_name', this.value)" style="flex:1">
+          <div class="wz-flex-row">
+            <select id="wz_vm_name" class="form-select wz-flex-grow" onchange="syncField('vm_name', this.value)">
               <option value="">— click Fetch VMs —</option>
             </select>
             <button class="btn btn-secondary btn-sm" onclick="fetchVMs()">↺ Fetch VMs</button>
           </div>
           <span class="help">Lists VMs visible to your VMware credentials. Click Fetch to load them.</span>
-          <div id="err_vm_name" style="color:var(--error);font-size:0.82rem;display:none"></div>
+          <div id="err_vm_name" class="wz-error"></div>
         </div>
-        <div id="vmware-fetch-status" class="hint" style="margin-bottom:14px"></div>
+        <div id="vmware-fetch-status" class="hint wz-discover-result"></div>
       </div>
 
       {# Local disk — directory browser + VMDK scanner #}
       <div id="src-local">
         <div class="field">
           <label>Host directory containing VMDK files</label>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <input type="text" id="wz_dir" class="form-input" style="flex:1;min-width:200px"
+          <div class="wz-flex-row-wrap">
+            <input type="text" id="wz_dir" class="form-input wz-input-wide"
                    placeholder="/var/lib/vz/dump/myvm"
                    oninput="syncField('directory', this.value)" />
             <button class="btn btn-secondary btn-sm" onclick="openBrowser()">📂 Browse</button>
@@ -159,20 +159,20 @@
           <span class="help">Enter the <strong>host-side absolute path</strong> (as seen by the Proxmox host, not the LXC). Click Browse to navigate via SSH/SFTP.</span>
         </div>
 
-        <div id="scan-status" style="margin-bottom:10px"></div>
+        <div id="scan-status" class="wz-discover-result"></div>
 
         <div class="field">
-          <label for="wz_manifest">Manifest file <span style="color:var(--muted);font-weight:400">(auto-detected)</span></label>
+          <label for="wz_manifest">Manifest file <span class="wz-muted-small">(auto-detected)</span></label>
           <input type="text" id="wz_manifest" class="form-input" placeholder="/var/lib/vz/dump/myvm/manifest.json"
                  oninput="syncField('manifest_path', this.value)" />
           <span class="help">Auto-filled if <code>manifest.json</code> is found next to the VMDKs. Required for local disk mode.</span>
-          <div id="err_manifest" style="color:var(--error);font-size:0.82rem;display:none"></div>
+          <div id="err_manifest" class="wz-error"></div>
         </div>
 
         <div class="field">
           <label>Select VMDK files <span style="color:var(--error)">*</span></label>
-          <span class="help" style="margin-bottom:8px;display:block">Paths must be host-absolute (exactly what <code>qm importdisk</code> will receive).</span>
-          <div id="err_source" style="color:var(--error);font-size:0.82rem;display:none;margin-bottom:6px"></div>
+          <span class="help wz-help-block">Paths must be host-absolute (exactly what <code>qm importdisk</code> will receive).</span>
+          <div id="err_source" class="wz-error wz-error-inline"></div>
           <div class="file-list" id="vmdk-checklist">
             <p class="file-empty">Enter a directory above and click Scan VMDKs.</p>
           </div>
@@ -189,50 +189,50 @@
     <div class="panel wz-panel" id="panel-3">
       <div class="panel-title"><span class="icon">🖥</span> Step 3 — Destination</div>
 
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <div class="wz-discover-row">
         <button class="btn btn-secondary btn-sm" id="btnDiscover" onclick="discoverProxmox()">🔌 Discover Storages &amp; Networks</button>
         <span id="discover-status" class="hint"></span>
       </div>
 
-      <div id="discover-result" style="margin-bottom:16px"></div>
+      <div id="discover-result" class="wz-discover-result"></div>
 
       {# ── Default storage (used for all disks unless overridden per-disk) ── #}
       <div class="field">
-        <label>Default storage pool <span style="color:var(--error)">*</span></label>
-        <div style="display:flex;gap:6px">
-          <select id="wz_storage" class="form-select" style="flex:1" onchange="onStorageSelect(this.value)">
+        <label>Default storage pool <span class="text-error">*</span></label>
+        <div class="wz-flex-row wz-compact-gap">
+          <select id="wz_storage" class="form-select wz-flex-grow" onchange="onStorageSelect(this.value)">
             <option value="">— click Discover or type below —</option>
           </select>
-          <input type="text" id="wz_storage_text" class="form-input" style="flex:1;min-width:120px"
+          <input type="text" id="wz_storage_text" class="form-input wz-input-flex"
                  placeholder="e.g. local-lvm" oninput="syncField('storage', this.value)" />
         </div>
         <span class="help">Where disks are imported. Select from discovered list <em>or</em> type any storage name manually.</span>
-        <div id="err_storage" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        <div id="err_storage" class="wz-error"></div>
       </div>
 
       {# ── Per-disk storage override ── #}
-      <div id="per-disk-storage" style="display:none;margin-bottom:16px">
-        <div style="font-size:0.78rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px">Per-disk storage (overrides default)</div>
+      <div id="per-disk-storage" class="wz-hidden wz-stack-gap">
+        <div class="wz-section-title">Per-disk storage (overrides default)</div>
         <div id="disk-storage-rows"></div>
       </div>
 
       {# ── Default bridge ── #}
       <div class="field">
-        <label>Default network bridge / SDN vnet <span style="color:var(--error)">*</span></label>
-        <div style="display:flex;gap:6px">
-          <select id="wz_bridge" class="form-select" style="flex:1" onchange="onBridgeSelect(this.value)">
+        <label>Default network bridge / SDN vnet <span class="text-error">*</span></label>
+        <div class="wz-flex-row wz-compact-gap">
+          <select id="wz_bridge" class="form-select wz-flex-grow" onchange="onBridgeSelect(this.value)">
             <option value="">— click Discover or type below —</option>
           </select>
-          <input type="text" id="wz_bridge_text" class="form-input" style="flex:1;min-width:120px"
+          <input type="text" id="wz_bridge_text" class="form-input wz-input-flex"
                  placeholder="e.g. vmbr0" oninput="syncField('bridge', this.value)" />
         </div>
         <span class="help">Bridge or SDN vnet for all NICs. Select from discovered list <em>or</em> type any name manually.</span>
-        <div id="err_bridge" style="color:var(--error);font-size:0.82rem;display:none"></div>
+        <div id="err_bridge" class="wz-error"></div>
       </div>
 
       {# ── Per-NIC bridge override ── #}
-      <div id="per-nic-bridge" style="display:none;margin-bottom:16px">
-        <div style="font-size:0.78rem;text-transform:uppercase;color:var(--muted);letter-spacing:0.08em;margin-bottom:8px">Per-NIC bridge assignment</div>
+      <div id="per-nic-bridge" class="wz-hidden wz-stack-gap">
+        <div class="wz-section-title">Per-NIC bridge assignment</div>
         <div id="nic-bridge-rows"></div>
       </div>
 
@@ -255,7 +255,7 @@
       </div>
 
       <div class="field">
-        <label for="wz_vmid">Proxmox VMID <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <label for="wz_vmid">Proxmox VMID <span class="wz-muted-small">(optional)</span></label>
         <input type="number" id="wz_vmid" class="form-input" min="1" placeholder="Leave blank to use next free ID"
                oninput="syncField('vmid', this.value ? parseInt(this.value, 10) : '')" />
         <span class="help">If left blank, Proxmox will automatically pick the next free VM ID.</span>
@@ -264,7 +264,7 @@
       <div class="field">
         <label>Hardware overrides from VMX</label>
         <span class="help">If the VMX is missing values, fill them here before launching the job.</span>
-        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:8px">
+        <div class="grid grid-cols-4 gap-8 mt-8">
           <input type="number" id="wz_hw_memory" class="form-input" min="1" placeholder="Memory MB"
                  oninput="syncVmxHardwareOverrides()" />
           <input type="number" id="wz_hw_cpu" class="form-input" min="1" placeholder="vCPUs"
@@ -316,19 +316,19 @@
       </label>
 
       {# Summary card #}
-      <div class="panel" style="background:var(--panel2);margin-top:20px;margin-bottom:0" id="summary-card">
-        <div style="font-weight:700;font-size:0.9rem;margin-bottom:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em">Summary</div>
-        <table style="width:100%;font-size:0.88rem;border-collapse:collapse">
-          <tr><td style="color:var(--muted);padding:4px 0;width:120px">Job name</td><td id="sum_name" style="font-weight:600">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Mode</td><td id="sum_mode">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Source</td><td id="sum_source" style="font-family:monospace;font-size:0.84rem">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Storage</td><td id="sum_storage">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Bridge</td><td id="sum_bridge">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Disk format</td><td id="sum_fmt">—</td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">VMID</td><td id="sum_vmid">Next free</td></tr>
-          <tr id="sum_hw_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware (VMX)</td><td id="sum_hw"></td></tr>
-          <tr id="sum_hw_override_row" style="display:none"><td style="color:var(--muted);padding:4px 0">Hardware overrides</td><td id="sum_hw_override"></td></tr>
-          <tr><td style="color:var(--muted);padding:4px 0">Dry run</td><td id="sum_dry"><span class="badge badge-warning">Yes</span></td></tr>
+      <div class="panel wz-summary-card" id="summary-card">
+        <div class="wz-summary-title">Summary</div>
+        <table class="wz-summary-table">
+          <tr><td class="cell-muted wz-summary-label-wide">Job name</td><td id="sum_name" class="cell-strong wz-summary-value">—</td></tr>
+          <tr><td class="cell-muted">Mode</td><td id="sum_mode" class="wz-summary-value">—</td></tr>
+          <tr><td class="cell-muted">Source</td><td id="sum_source" class="cell-mono wz-summary-value" style="font-size:0.84rem">—</td></tr>
+          <tr><td class="cell-muted">Storage</td><td id="sum_storage" class="wz-summary-value">—</td></tr>
+          <tr><td class="cell-muted">Bridge</td><td id="sum_bridge" class="wz-summary-value">—</td></tr>
+          <tr><td class="cell-muted">Disk format</td><td id="sum_fmt" class="wz-summary-value">—</td></tr>
+          <tr><td class="cell-muted">VMID</td><td id="sum_vmid" class="wz-summary-value">Next free</td></tr>
+          <tr id="sum_hw_row" style="display:none"><td class="cell-muted">Hardware (VMX)</td><td id="sum_hw" class="wz-summary-value"></td></tr>
+          <tr id="sum_hw_override_row" style="display:none"><td class="cell-muted">Hardware overrides</td><td id="sum_hw_override" class="wz-summary-value"></td></tr>
+          <tr><td class="cell-muted">Dry run</td><td id="sum_dry" class="wz-summary-value"><span class="badge badge-warning">Yes</span></td></tr>
         </table>
       </div>
 
@@ -337,7 +337,7 @@
         <button class="btn btn-primary" id="btnLaunch" onclick="submitJob()">🚀 Create Migration Job</button>
       </div>
 
-      <div id="launch-error" style="display:none;margin-top:14px"></div>
+      <div id="launch-error" class="wz-launch-error"></div>
     </div>
 
   </div><!-- /.wz-panels -->
@@ -351,9 +351,8 @@
       <button class="modal-close" onclick="closeBrowser()">✕</button>
     </div>
     <div class="modal-toolbar">
-      <input type="text" id="modalPath" class="form-input"
+      <input type="text" id="modalPath" class="form-input cell-mono wz-modal-input"
              placeholder="/var/lib/vz/dump"
-             style="font-family:monospace;font-size:0.88rem"
              onkeydown="if(event.key==='Enter') browseDir(this.value)" />
       <button class="btn btn-secondary btn-sm" onclick="browseDir(document.getElementById('modalPath').value)">Go</button>
     </div>
@@ -366,7 +365,7 @@
 </div>
 
 {# Hidden form that does the actual POST to /launch/ #}
-<form method="post" action="/launch/" id="launchForm" style="display:none">
+<form method="post" action="/launch/" id="launchForm" class="wz-hidden">
   {% csrf_token %}
   <input type="hidden" name="name"             id="f_name">
   <input type="hidden" name="mode"             id="f_mode"    value="local">
@@ -580,10 +579,10 @@ function buildPerDiskRows(storages) {
     // Estimate source size for display
     const sourceGb = disk.capacity_gb || (disk.capacity_bytes ? Math.round(disk.capacity_bytes / (1024**3)) : 0);
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
+    row.className = 'wz-disk-row';
     const meta = [disk.label, disk.datastore ? `datastore: ${disk.datastore}` : '', disk.controller_type ? `${disk.controller_type}${disk.controller !== undefined ? disk.controller : ''}` : ''].filter(Boolean).join(' · ');
-    const sourceSizeLabel = sourceGb ? `<span style="color:var(--accent)">${sourceGb} GB</span>` : '';
-    row.innerHTML = `<span style="flex:2;font-family:monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(key)}">💿 ${esc(name)} ${sourceSizeLabel}${meta ? `<div style="font-size:0.76rem;color:var(--muted)">${esc(meta)}</div>` : ''}</span>`;
+    const sourceSizeLabel = sourceGb ? `<span class="wz-disk-size">${sourceGb} GB</span>` : '';
+    row.innerHTML = `<span class="wz-disk-name" title="${esc(key)}">💿 ${esc(name)} ${sourceSizeLabel}${meta ? `<div class="wz-disk-meta">${esc(meta)}</div>` : ''}</span>`;
 
     // Storage selection
     const sel = document.createElement('select');
@@ -609,7 +608,7 @@ function buildPerDiskRows(storages) {
 
     // Resize input (GB)
     const resizeWrapper = document.createElement('div');
-    resizeWrapper.style.cssText = 'display:flex;align-items:center;gap:4px;flex:1';
+    resizeWrapper.className = 'wz-flex-row wz-compact-gap';
     const resizeInput = document.createElement('input');
     resizeInput.type = 'number';
     resizeInput.className = 'form-input';
@@ -629,8 +628,7 @@ function buildPerDiskRows(storages) {
     });
     const resizeLabel = document.createElement('span');
     resizeLabel.textContent = 'GB';
-    resizeLabel.style.color = 'var(--muted)';
-    resizeLabel.style.fontSize = '0.76rem';
+    resizeLabel.className = 'wz-disk-meta';
     resizeWrapper.appendChild(resizeInput);
     resizeWrapper.appendChild(resizeLabel);
 
@@ -649,9 +647,9 @@ function buildPerNicRows(bridges) {
   rows.innerHTML = '';
   nics.forEach((nic, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:0.85rem';
+    row.className = 'wz-nic-row';
     const key = nic.label || nic.network_name || `nic-${i}`;
-    row.innerHTML = `<span style="flex:2">${esc(key)} <span style="color:var(--muted)">(${esc(nic.network_name||'')} / ${esc(nic.adapter||'')})</span></span>`;
+    row.innerHTML = `<span class="wz-nic-name">${esc(key)} <span class="wz-nic-meta">(${esc(nic.network_name||'')} / ${esc(nic.adapter||'')})</span></span>`;
     const sel = document.createElement('select');
     sel.className = 'form-select'; sel.style.flex = '1';
     sel.innerHTML = `<option value="">(default: ${esc(state.bridge||'auto')})</option>`;
@@ -778,7 +776,7 @@ async function discoverProxmox() {
     // Populate default storage dropdown
     populateSelect('wz_storage', d.storages.map(s => ({
       value: s.storage,
-      label: s.content ? `${s.storage} (${s.type} · ${s.content} · ${s.available_gb} GB free)` : `${s.storage} (${s.type} · ${s.available_gb} GB free)`,
+      label: s.content ? `${s.storage} (${s.type||''} · ${s.content} · ${s.available_gb||0}GB free)` : `${s.storage} (${s.type||''} · ${s.available_gb||0}GB free)`,
     })), state.storage, '— select or type —');
     // Populate default bridge dropdown
     populateSelect('wz_bridge', d.bridges.map(b => ({
@@ -814,20 +812,20 @@ function populateSelect(id, items, selectedVal, emptyLabel) {
 
 function renderInventoryTables(d) {
   let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:0.86rem">';
-  h += '<div><p style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px;letter-spacing:0.08em">💾 Storages</p>';
+  h += '<div><p class="wz-muted-small" style="margin-bottom:6px;letter-spacing:0.08em;text-transform:uppercase">💾 Storages</p>';
   h += '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Free</th></tr></thead><tbody>';
   if (!d.storages.length) h += '<tr class="no-data"><td colspan="3">None</td></tr>';
   for (const s of d.storages) {
     const dot = s.active ? '🟢' : '🔴';
-    h += `<tr><td>${dot} <strong>${esc(s.storage)}</strong></td><td style="color:var(--muted)">${esc(s.type)}</td><td>${s.available_gb} GB</td></tr>`;
+    h += `<tr><td>${dot} <strong>${esc(s.storage)}</strong></td><td class="cell-muted">${esc(s.type)}</td><td>${s.available_gb} GB</td></tr>`;
   }
   h += '</tbody></table></div>';
-  h += '<div><p style="font-size:0.72rem;text-transform:uppercase;color:var(--muted);margin-bottom:6px;letter-spacing:0.08em">🌐 Networks / SDN</p>';
+  h += '<div><p class="wz-muted-small" style="margin-bottom:6px;letter-spacing:0.08em;text-transform:uppercase">🌐 Networks / SDN</p>';
   h += '<table class="table"><thead><tr><th>Name</th><th>Ports</th><th>Tag</th></tr></thead><tbody>';
   if (!d.bridges.length) h += '<tr class="no-data"><td colspan="3">None</td></tr>';
   for (const b of d.bridges) {
     const vlan = b.vlan_aware ? '<span class="badge badge-info">VLAN</span>' : '';
-    h += `<tr><td><strong>${esc(b.name)}</strong></td><td style="color:var(--muted);font-size:0.8rem">${esc(b.ports||'')}</td><td>${vlan}</td></tr>`;
+    h += `<tr><td><strong>${esc(b.name)}</strong></td><td class="cell-muted">${esc(b.ports||'')}</td><td>${vlan}</td></tr>`;
   }
   h += '</tbody></table></div></div>';
   return h;
@@ -841,11 +839,11 @@ async function scanVmdks() {
   if (!path) { alert('Enter a host directory path first.'); return; }
   syncField('directory', path);
   const box = document.getElementById('scan-status');
-  box.innerHTML = '<span class="hint">⟳ Scanning via SSH…</span>';
+  box.innerHTML = '<p class="wz-file-msg wz-file-msg-muted">⟳ Scanning via SSH…</p>';
   try {
     const r = await fetch('/api/vmdk-scan/?path=' + encodeURIComponent(path));
     const d = await r.json();
-    if (!d.ok) { box.innerHTML = `<div class="message error">Scan failed: ${esc(d.error)}</div>`; return; }
+    if (!d.ok) { box.innerHTML = `<div class="wz-file-msg wz-file-msg-error">${esc(d.error)}</div>`; return; }
 
     // ── Auto-fill manifest ──
     if (d.manifest_path) {
@@ -860,7 +858,7 @@ async function scanVmdks() {
 
     const totalItems = d.vmdks.length + (d.archives || []).length;
     if (!totalItems) {
-      box.innerHTML = `<div class="message warning">No .vmdk files or archives found in <code>${esc(d.path)}</code>.</div>`;
+      box.innerHTML = `<div class="wz-file-msg wz-file-msg-muted">No .vmdk files or archives found in <code>${esc(d.path)}</code>.</div>`;
       return;
     }
 
@@ -869,11 +867,11 @@ async function scanVmdks() {
     if ((d.archives||[]).length) statusParts.push(`${d.archives.length} archive(s)`);
     if (d.manifest_path)  statusParts.push('manifest detected');
     if (d.vmx_path)       statusParts.push('VMX parsed — hardware auto-filled');
-    box.innerHTML = `<div style="color:var(--success);font-size:0.85rem">✓ Found ${statusParts.join(' · ')}</div>`;
+    box.innerHTML = `<div class="wz-file-msg wz-file-msg-success">✓ Found ${statusParts.join(' · ')}</div>`;
 
     buildVmdkCheckboxes(d.vmdks, d.archives || []);
   } catch(e) {
-    box.innerHTML = `<div class="message error">Error: ${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="wz-file-msg wz-file-msg-error">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -915,13 +913,13 @@ function applyVmxSpecs(specs) {
   if (existingHint) existingHint.remove();
   const hint = document.createElement('div');
   hint.id = 'vmx-hint';
-  hint.style.cssText = 'margin-top:10px;padding:10px 14px;border-radius:8px;background:rgba(79,142,247,0.08);border:1px solid rgba(79,142,247,0.25);font-size:0.85rem';
-  hint.innerHTML = `<strong style="color:var(--accent)">VMX detected — auto-filled:</strong>
+  hint.className = 'wz-vmx-hint wz-file-msg-muted';
+  hint.innerHTML = `<strong class="cell-strong" style="color:var(--accent)">VMX detected — auto-filled:</strong>
     RAM <strong>${specs.memory_mb} MB</strong> · vCPUs <strong>${specs.cpu_count}</strong> ·
     Firmware <strong>${specs.firmware.toUpperCase()}</strong> ·
     OS <em>${esc(specs.guest_os || 'unknown')}</em>
     ${(specs.networks || []).length ? `· ${(specs.networks || []).length} NIC(s): ${(specs.networks || []).map(n=>esc(n.network_name)).join(', ')}` : ''}
-    ${specs.disks && specs.disks.length ? `<div style="margin-top:6px;color:var(--muted);font-size:0.82rem">Disks: ${specs.disks.map(d => `${esc(d.file_name)}${d.datastore ? ` @ ${esc(d.datastore)}` : ''}`).join(', ')}</div>` : ''}`;
+    ${specs.disks && specs.disks.length ? `<div class="wz-muted-small" style="margin-top:6px">Disks: ${specs.disks.map(d => `${esc(d.file_name)}${d.datastore ? ` @ ${esc(d.datastore)}` : ''}`).join(', ')}</div>` : ''}`;
   box.after(hint);
 }
 
@@ -945,19 +943,19 @@ function buildVmdkCheckboxes(vmdks, archives) {
   }
 
   vmdks.forEach(f => {
-    const sizeGb = f.size ? ` <span style="color:var(--muted)">(${(f.size/1073741824).toFixed(1)} GB)</span>` : '';
+    const sizeGb = f.size ? ` — ${(f.size/1073741824).toFixed(1)} GB` : '';
     makeItem(f.path, ` ${esc(f.name)}${sizeGb}`, true);
   });
 
   if (state.vmx_disk_specs && state.vmx_disk_specs.length) {
     const vmxBox = document.createElement('div');
-    vmxBox.style.cssText = 'margin:10px 0 12px;padding:10px 12px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:var(--panel2);font-size:0.82rem;color:var(--muted)';
+    vmxBox.className = 'wz-file-msg wz-file-msg-muted';
     vmxBox.innerHTML = `<strong style="color:var(--text)">VMX disk inventory</strong><div style="margin-top:6px">${state.vmx_disk_specs.map(d => `${esc(d.label || 'Disk')} → ${esc(d.file_name || d.path || '')}${d.datastore ? ` <span style="color:var(--accent)">(${esc(d.datastore)})</span>` : ''}`).join('<br>')}</div>`;
     list.prepend(vmxBox);
   }
 
   (archives || []).forEach(a => {
-    const sizeGb = a.size ? ` <span style="color:var(--muted)">(${(a.size/1073741824).toFixed(1)} GB)</span>` : '';
+    const sizeGb = a.size ? ` — ${(a.size/1073741824).toFixed(1)} GB` : '';
     const badge = `<span class="badge badge-warning" style="margin-left:8px">${esc(a.archive_type)}</span>`;
     makeItem(a.path, ` ${esc(a.name)}${sizeGb}${badge}`, true);
   });
@@ -1029,26 +1027,25 @@ async function browseDir(path) {
   if (!path) path = '/';
   document.getElementById('modalPath').value = path;
   const listing = document.getElementById('modalListing');
-  listing.innerHTML = '<p style="padding:12px;color:var(--muted)">Loading…</p>';
+  listing.innerHTML = '<p class="wz-file-msg wz-file-msg-muted">Loading…</p>';
   try {
     const r = await fetch('/api/browse-directory/?path=' + encodeURIComponent(path));
     const d = await r.json();
-    if (!d.ok) { listing.innerHTML = `<div style="padding:12px;color:var(--error)">${esc(d.error)}</div>`; return; }
+    if (!d.ok) { listing.innerHTML = `<div class="wz-file-msg wz-file-msg-error">${esc(d.error)}</div>`; return; }
     document.getElementById('modalPath').value = d.path;
     const parent = d.path.replace(/[\/\\][^\/\\]+$/, '') || '/';
     listing.innerHTML = '';
 
     function makeDirItem(path, label) {
       const div = document.createElement('div');
-      div.className = 'file-item';
-      div.style.cursor = 'pointer';
+      div.className = 'file-item wz-browser-item cursor-pointer';
       div.innerHTML = label;
       div.addEventListener('click', () => browseDir(path));
       listing.appendChild(div);
     }
 
     if (d.path !== parent) {
-      makeDirItem(parent, '<span>⬆ <em style="color:var(--muted)">..</em></span>');
+      makeDirItem(parent, '<span>⬆ <em class="wz-muted-small">..</em></span>');
     }
     for (const f of d.folders) {
       const name = f.replace(/.*[\/\\]/, '');
@@ -1059,14 +1056,13 @@ async function browseDir(path) {
       const sz = f.size ? ` — ${(f.size/1073741824).toFixed(1)} GB` : '';
       const style = isVmdk ? 'color:#60a5fa;font-weight:600' : 'color:var(--muted)';
       const div = document.createElement('div');
-      div.className = 'file-item';
-      div.style.cursor = 'default';
-      div.innerHTML = `<span style="${style}">📄 ${esc(f.name)}${esc(sz)}</span>`;
+      div.className = 'file-item wz-browser-item cursor-default';
+      div.innerHTML = `<span class="${isVmdk ? 'wz-browser-file-strong' : 'wz-browser-file-weak'}">📄 ${esc(f.name)}${esc(sz)}</span>`;
       listing.appendChild(div);
     }
-    if (!d.folders.length && !d.files.length) listing.innerHTML = '<p style="padding:12px;color:var(--muted)">Empty directory</p>';
+    if (!d.folders.length && !d.files.length) listing.innerHTML = '<p class="wz-file-msg wz-file-msg-muted wz-browser-empty">Empty directory</p>';
   } catch(e) {
-    listing.innerHTML = `<div style="padding:12px;color:var(--error)">Error: ${esc(e.message)}</div>`;
+    listing.innerHTML = `<div class="wz-file-msg wz-file-msg-error wz-browser-error">Error: ${esc(e.message)}</div>`;
   }
 }
 

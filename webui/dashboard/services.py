@@ -157,6 +157,13 @@ def _engine_from_job(job: MigrationJob) -> MigrationEngine:
 
 def execute_job(job: MigrationJob) -> MigrationJob:
     engine = _engine_from_job(job)
+    job.migration_ledger = engine.reconcile(job.migration_ledger)
+    job.save(update_fields=["migration_ledger", "updated_at"])
+
+    def persist_ledger(ledger: dict) -> None:
+        job.migration_ledger = ledger
+        job.save(update_fields=["migration_ledger", "updated_at"])
+
     vm_name = job.vm_name.strip()
     storage = job.storage or None
     bridge = job.bridge or None
@@ -164,6 +171,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
     vmid = job.vmid if job.vmid and job.vmid > 0 else None
     allow_disk_shrink = bool(job.allow_disk_shrink)
     fallback_nic_bridge = (job.fallback_nic_bridge or "").strip() or None
+    staging_dir = resolve_stage_path(f"jobs/job-{job.id}")
     log_lines: list[str] = [
         f"Starting job {job.id} ({job.name})",
         f"mode={job.mode}",
@@ -204,6 +212,9 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 disk_resize_map=job.disk_resize_map or None,
                 allow_disk_shrink=allow_disk_shrink,
                 fallback_nic_bridge=fallback_nic_bridge,
+                migration_ledger=job.migration_ledger,
+                persist_ledger=persist_ledger,
+                staging_dir=staging_dir,
             )
         else:
             log_lines.append(f"vmx_specs={json.dumps(job.vmx_specs or {}, default=str)}")
@@ -222,6 +233,9 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 disk_resize_map=job.disk_resize_map or None,
                 allow_disk_shrink=allow_disk_shrink,
                 fallback_nic_bridge=fallback_nic_bridge,
+                migration_ledger=job.migration_ledger,
+                persist_ledger=persist_ledger,
+                staging_dir=staging_dir,
             )
 
         result_payload = json.loads(json.dumps(asdict(result), default=str))

@@ -325,6 +325,11 @@ body.app-layout {
   border-bottom: 1px solid var(--border);
 }
 .panel-title .icon { font-size: 1.1rem; }
+.panel-title-compact {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
 .gap-top { margin-top: 20px; }
 .grid { display: grid; gap: 20px; }
 .two-up { grid-template-columns: 300px 1fr; }
@@ -369,6 +374,9 @@ body.app-layout {
   gap: 0;
   position: sticky;
   top: 24px;
+}
+.wz-stepper-card {
+  padding: 20px 16px;
 }
 .wz-step-indicator {
   display: flex;
@@ -424,6 +432,189 @@ body.app-layout {
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
+}
+.wz-flex-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wz-flex-row-wrap {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.wz-flex-grow {
+  flex: 1;
+}
+.wz-error {
+  color: var(--error);
+  font-size: 0.82rem;
+  display: none;
+}
+.wz-warning-note {
+  color: var(--warning);
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+.wz-summary-card {
+  background: var(--panel2);
+  margin-top: 20px;
+  margin-bottom: 0;
+}
+.wz-summary-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.wz-summary-table {
+  width: 100%;
+  font-size: 0.88rem;
+  border-collapse: collapse;
+}
+.wz-summary-table td {
+  padding: 4px 0;
+}
+.wz-summary-label {
+  color: var(--muted);
+}
+.wz-summary-label-wide {
+  width: 120px;
+}
+.wz-summary-value {
+  padding: 4px 0;
+}
+.wz-pointer {
+  cursor: pointer;
+}
+.wz-help-block {
+  margin-bottom: 8px;
+  display: block;
+}
+.wz-section-title {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+}
+.wz-discover-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.wz-discover-result {
+  margin-bottom: 16px;
+}
+.wz-select-flex {
+  flex: 1;
+}
+.wz-input-flex {
+  flex: 1;
+  min-width: 120px;
+}
+.wz-input-wide {
+  flex: 1;
+  min-width: 200px;
+}
+.wz-compact-gap {
+  gap: 6px;
+}
+.wz-hidden {
+  display: none;
+}
+.wz-nowrap {
+  white-space: nowrap;
+}
+.wz-muted-small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 400;
+}
+.wz-error-inline {
+  margin-bottom: 6px;
+}
+.wz-modal-input {
+  font-size: 0.88rem;
+}
+.wz-launch-error {
+  display: none;
+  margin-top: 14px;
+}
+.wz-stack-gap {
+  margin-bottom: 16px;
+}
+.wz-disk-row,
+.wz-nic-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 0.85rem;
+}
+.wz-disk-name,
+.wz-nic-name {
+  flex: 2;
+  font-family: monospace;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wz-disk-size {
+  color: var(--accent);
+}
+.wz-disk-meta,
+.wz-nic-meta {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.wz-file-msg {
+  padding: 12px;
+}
+.wz-file-msg-muted {
+  color: var(--muted);
+}
+.wz-file-msg-error {
+  color: var(--error);
+}
+.wz-file-msg-success {
+  color: var(--success);
+  font-size: 0.85rem;
+}
+.wz-browser-item {
+  padding: 12px;
+}
+.wz-browser-item.cursor-pointer {
+  cursor: pointer;
+}
+.wz-browser-item.cursor-default {
+  cursor: default;
+}
+.wz-browser-file-weak {
+  color: var(--muted);
+}
+.wz-browser-file-strong {
+  color: #60a5fa;
+  font-weight: 600;
+}
+.wz-browser-loading,
+.wz-browser-error,
+.wz-browser-empty {
+  padding: 12px;
+}
+.wz-vmx-hint {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(79,142,247,0.08);
+  border: 1px solid rgba(79,142,247,0.25);
+  font-size: 0.85rem;
 }
 
 /* ══════════════════════════════════════
@@ -615,9 +806,117 @@ code { font-family: "Consolas","Monaco",monospace; font-size: 0.88em; background
   white-space: pre-wrap;
   word-break: break-word;
 }
+.log-box-error {
+  border-color: rgba(239,68,68,.3);
+}
+.result-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+}
 .log-box .log-ok   { color: var(--success); }
 .log-box .log-err  { color: var(--error); }
 .log-box .log-warn { color: var(--warning); }
+
+.stack-block {
+  margin-top: 14px;
+}
+.section-eyebrow {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 6px;
+}
+.text-error {
+  color: var(--error);
+}
+
+.dashboard-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.dashboard-filter-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.dashboard-filter-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.dashboard-filter-select {
+  min-width: 150px;
+  padding: 8px 10px;
+}
+.cell-muted {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.cell-strong {
+  font-weight: 600;
+}
+.cell-mono {
+  font-family: monospace;
+}
+
+.job-detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.job-detail-badge-offset {
+  margin-left: 6px;
+}
+.job-detail-progress-card {
+  margin-bottom: 20px;
+}
+.job-detail-hidden {
+  display: none;
+}
+.job-detail-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.job-detail-progress-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.job-detail-progress-elapsed {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.job-detail-progress-sub {
+  margin-top: 8px;
+}
+.job-detail-progress-track {
+  background: var(--panel2);
+  border-radius: 6px;
+  height: 10px;
+  overflow: hidden;
+  position: relative;
+}
+.job-detail-progress-bar {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg,#4f8ef7,#38bdf8);
+  width: 0%;
+  transition: width 0.4s ease;
+  position: relative;
+  overflow: hidden;
+}
+.job-detail-progress-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.25) 50%,transparent 100%);
+  animation: shimmer 1.4s infinite;
+  background-size: 200% 100%;
+}
 
 /* ── Job timeline ── */
 .timeline { display: flex; flex-direction: column; gap: 0; }
