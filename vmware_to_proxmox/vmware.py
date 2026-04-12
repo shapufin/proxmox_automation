@@ -98,7 +98,7 @@ class VmwareClient:
                     datastore = datastore.strip()
                 
                 # Extract backing mode (persistent, independent-persistent, etc.)
-                backing_mode = getattr(device, "backing", {}).get("diskMode", "persistent") if hasattr(backing, "diskMode") else "persistent"
+                backing_mode = getattr(backing, "diskMode", "persistent") if hasattr(backing, "diskMode") else "persistent"
                 if isinstance(backing_mode, str):
                     backing_mode = backing_mode.lower()
                 
@@ -107,6 +107,9 @@ class VmwareClient:
                 
                 # Detect RDM devices (Raw Device Mapping)
                 is_rdm = "rdm" in device_type.lower() or backing_mode.startswith("independent")
+                
+                # Set backing_type based on RDM detection
+                backing_type = "rdm" if is_rdm else "file"
                 
                 # Extract LUN ID for RDM devices
                 lun_id = None
