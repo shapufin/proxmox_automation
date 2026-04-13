@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -11,6 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "webui.settings_production")
+
+import django
+
+django.setup()
 
 from vmware_to_proxmox.config import AppConfig, MigrationConfig, ProxmoxConfig, VmwareConfig
 from vmware_to_proxmox.engine import MigrationEngine
