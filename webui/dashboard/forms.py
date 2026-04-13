@@ -56,6 +56,7 @@ class MigrationJobForm(forms.Form):
     bridge  = forms.CharField(max_length=255, required=False)
     disk_format = forms.ChoiceField(choices=[("", "Auto"), ("qcow2", "qcow2"), ("raw", "raw")], required=False)
     disk_storage_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
+    datastore_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     nic_bridge_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     disk_resize_map = forms.CharField(required=False, initial="{}", widget=forms.HiddenInput)
     allow_disk_shrink = forms.CharField(required=False, initial="", widget=forms.HiddenInput)

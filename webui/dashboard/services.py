@@ -238,6 +238,7 @@ def execute_job(job: MigrationJob) -> MigrationJob:
                 start_after_import=job.start_after_import,
                 vmid=vmid,
                 disk_storage_map=job.disk_storage_map or None,
+                datastore_map=job.datastore_map or None,
                 nic_bridge_map=job.nic_bridge_map or None,
                 vmx_specs=job.vmx_specs if job.vmx_specs else None,
                 disk_resize_map=job.disk_resize_map or None,
