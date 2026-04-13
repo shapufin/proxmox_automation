@@ -7,12 +7,16 @@ import shlex
 import stat as stat_mod
 import subprocess
 import shutil
+import time
 from pathlib import Path
 from typing import Any, Optional
 
 import paramiko
 
 from .models import DiskFormat, ProxmoxBridgeSpec, ProxmoxStorageSpec
+
+_SSH_MAX_RETRIES = 3
+_SSH_BASE_DELAY = 2  # seconds; doubles each retry
 
 log = logging.getLogger(__name__)
 
@@ -235,23 +239,33 @@ class ProxmoxClient:
 
     def _run_remote(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(x) for x in args)
-        try:
-            client = self._get_ssh_client()
-            stdin, stdout, stderr = client.exec_command(command)
-            exit_code = stdout.channel.recv_exit_status()
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            proc = subprocess.CompletedProcess(args=args, returncode=exit_code, stdout=out, stderr=err)
-            if check and exit_code != 0:
-                raise ProxmoxClientError(
-                    f"Command failed: {command}\nSTDOUT: {out}\nSTDERR: {err}"
-                )
-            return proc
-        except ProxmoxClientError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            self._close_ssh()  # drop broken connection so next call reconnects
-            raise ProxmoxClientError(f"SSH command failed: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(_SSH_MAX_RETRIES):
+            try:
+                client = self._get_ssh_client()
+                stdin, stdout, stderr = client.exec_command(command)
+                exit_code = stdout.channel.recv_exit_status()
+                out = stdout.read().decode("utf-8", errors="replace")
+                err = stderr.read().decode("utf-8", errors="replace")
+                proc = subprocess.CompletedProcess(args=args, returncode=exit_code, stdout=out, stderr=err)
+                if check and exit_code != 0:
+                    raise ProxmoxClientError(
+                        f"Command failed: {command}\nSTDOUT: {out}\nSTDERR: {err}"
+                    )
+                return proc
+            except ProxmoxClientError:
+                raise  # application-level errors are not retryable
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._close_ssh()  # drop broken connection so next attempt reconnects
+                if attempt < _SSH_MAX_RETRIES - 1:
+                    delay = _SSH_BASE_DELAY * (2 ** attempt)
+                    log.warning(
+                        "SSH transport failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1, _SSH_MAX_RETRIES, delay, exc,
+                    )
+                    time.sleep(delay)
+        raise ProxmoxClientError(f"SSH command failed after {_SSH_MAX_RETRIES} attempts: {last_exc}") from last_exc
 
     def ensure_prerequisites(self) -> None:
         """When SSH is enabled the binaries live on the remote host, not locally.
@@ -671,6 +685,71 @@ class ProxmoxClient:
 
     def destroy_vm(self, vmid: int) -> None:
         self._run(["qm", "destroy", str(vmid), "--purge", "1"])
+
+    def check_storage_space(self, storage_name: str, required_bytes: int) -> None:
+        """Raise if the target storage lacks sufficient free space.
+
+        Called before starting disk imports to fail fast instead of
+        discovering the shortage halfway through a multi-disk migration.
+        """
+        try:
+            spec = self.storage_by_name(storage_name)
+        except ProxmoxClientError:
+            log.warning("Cannot verify free space for storage '%s' — not found", storage_name)
+            return  # non-fatal: storage may still be valid, let importdisk decide
+        available_bytes = spec.available * 1024  # spec.available is in KiB
+        if available_bytes < required_bytes:
+            available_gb = available_bytes / (1024 ** 3)
+            required_gb = required_bytes / (1024 ** 3)
+            raise ProxmoxClientError(
+                f"Insufficient space on '{storage_name}': "
+                f"{available_gb:.1f} GB free, {required_gb:.1f} GB required. "
+                "Free up space or choose a different storage target."
+            )
+        log.info(
+            "Storage '%s' space check passed: %.1f GB free, %.1f GB required",
+            storage_name,
+            available_bytes / (1024 ** 3),
+            required_bytes / (1024 ** 3),
+        )
+
+    def verify_imported_disk(self, volume_id: str, expected_bytes: int, tolerance: float = 0.01) -> None:
+        """Verify an imported volume's size matches expectations.
+
+        *expected_bytes* is the virtual size of the source disk.
+        *tolerance* is the allowed fractional difference (default 1%%).
+        Raises ProxmoxClientError on mismatch.
+        """
+        if expected_bytes <= 0:
+            return  # cannot verify when source size is unknown
+        safe_id = _normalize_volume_id(volume_id)
+        if not safe_id:
+            return
+        try:
+            proc = self._run(["pvesm", "list", safe_id.split(":")[0], "--output-format", "json"], check=False)
+            if proc.returncode != 0:
+                log.warning("Cannot verify imported volume size for %s: pvesm list failed", safe_id)
+                return
+            import json as _json
+            rows = _json.loads(proc.stdout or "[]")
+            for row in rows:
+                if str(row.get("volid", "")) == safe_id:
+                    actual_bytes = int(row.get("size", 0) or 0)
+                    if actual_bytes <= 0:
+                        return
+                    diff = abs(actual_bytes - expected_bytes) / max(expected_bytes, 1)
+                    if diff > tolerance:
+                        raise ProxmoxClientError(
+                            f"Imported volume '{safe_id}' size mismatch: "
+                            f"expected {expected_bytes} bytes, got {actual_bytes} bytes "
+                            f"(diff {diff:.1%}). The import may be corrupt."
+                        )
+                    log.info("Volume '%s' size verified: %d bytes (%.1f%% diff)", safe_id, actual_bytes, diff * 100)
+                    return
+        except ProxmoxClientError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Volume size verification skipped for %s: %s", safe_id, exc)
 
     def remove_volume(self, volume_id: str) -> None:
         safe_volume_id = _normalize_volume_id(volume_id)

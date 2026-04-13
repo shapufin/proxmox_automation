@@ -32,7 +32,13 @@ class Command(BaseCommand):
 
     def _claim_job(self):
         with transaction.atomic():
-            job = MigrationJob.objects.filter(status=JobStatus.PENDING).order_by("created_at").first()
+            job = (
+                MigrationJob.objects
+                .select_for_update(skip_locked=True)
+                .filter(status=JobStatus.PENDING)
+                .order_by("created_at")
+                .first()
+            )
             if job is None:
                 return None
             job.status = JobStatus.RUNNING

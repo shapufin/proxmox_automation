@@ -212,8 +212,16 @@
 
       {# ── Per-disk storage override ── #}
       <div id="per-disk-storage" class="wz-hidden wz-stack-gap">
-        <div class="wz-section-title">Per-disk storage (overrides default)</div>
+        <div class="wz-section-title">Per-disk storage &amp; resize</div>
         <div id="disk-storage-rows"></div>
+        <label class="toggle-row" style="cursor:pointer;margin-top:8px">
+          <input type="checkbox" id="wz_allow_disk_shrink_step3"
+                 onchange="state.allow_disk_shrink = this.checked; document.getElementById('wz_allow_disk_shrink').checked = this.checked; syncField('allow_disk_shrink', this.checked); updateResizePlaceholders()">
+          <div class="toggle-label">
+            <strong>Allow disk shrink</strong>
+            <span>Permit shrinking a disk below its current size. Only safe if the guest filesystem was already reduced.</span>
+          </div>
+        </label>
       </div>
 
       {# ── RDM / LUN devices ── #}
@@ -379,7 +387,7 @@
       </label>
 
       <label class="toggle-row" style="cursor:pointer">
-        <input type="checkbox" id="wz_allow_disk_shrink" onchange="syncField('allow_disk_shrink', this.checked)">
+        <input type="checkbox" id="wz_allow_disk_shrink" onchange="state.allow_disk_shrink = this.checked; var s3 = document.getElementById('wz_allow_disk_shrink_step3'); if(s3) s3.checked = this.checked; syncField('allow_disk_shrink', this.checked); updateResizePlaceholders()">
         <div class="toggle-label">
           <strong>⚠ Allow destructive disk shrink</strong>
           <span>Permit shrinking a disk below its current size. This is destructive and only safe if the guest filesystem has already been reduced.</span>
@@ -697,7 +705,8 @@ function buildPerDiskRows(storages) {
     resizeInput.className = 'form-input';
     resizeInput.style.flex = '1';
     resizeInput.min = 1;
-    resizeInput.placeholder = sourceGb ? `≥${sourceGb} GB` : 'Size GB';
+    resizeInput.placeholder = sourceGb ? `${sourceGb} GB (current)` : 'Target GB';
+    resizeInput.dataset.sourceGb = sourceGb || 0;
     if (state.disk_resize_map[key]) {
       resizeInput.value = state.disk_resize_map[key];
     }
@@ -818,8 +827,8 @@ function buildDatastoreMappingRows(storages) {
     // VMware datastore label
     const label = document.createElement('span');
     label.className = 'wz-disk-name';
-    label.textContent = `📦 ${esc(datastore)}`;
-    label.title = `VMware datastore: ${esc(datastore)}`;
+    label.textContent = `\uD83D\uDCE6 ${datastore}`;
+    label.title = `VMware datastore: ${datastore}`;
     
     // Proxmox storage selector
     const sel = document.createElement('select');
@@ -1343,6 +1352,17 @@ function submitJob() {
 
 /* ── helpers ── */
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function updateResizePlaceholders() {
+  const inputs = document.querySelectorAll('#disk-storage-rows input[type=number]');
+  inputs.forEach(inp => {
+    const gb = parseInt(inp.dataset.sourceGb || '0', 10);
+    if (!gb) return;
+    inp.placeholder = state.allow_disk_shrink
+      ? `${gb} GB (shrink OK)`
+      : `${gb} GB (current)`;
+  });
+}
 </script>
 
 {% endblock %}

@@ -542,11 +542,25 @@ class MigrationEngine:
             return FirmwareMode.UEFI
         return FirmwareMode.BIOS
 
-    def _resolve_bridge(self, vm_network_name: str) -> str:
-        bridge = self.config.bridge_for_network(vm_network_name)
+    def _resolve_bridge(self, bridge_or_network: str) -> str:
+        """Resolve a bridge name for Proxmox.
+
+        If *bridge_or_network* is already a known Proxmox bridge or SDN VNet,
+        use it directly.  Otherwise treat it as a VMware network name and look
+        it up in bridge_map → default_bridge.  Raises if the resolved name
+        does not exist on Proxmox.
+        """
+        # Fast path: the caller already supplied a valid Proxmox bridge / VNet
+        if bridge_or_network and self.proxmox.bridge_exists(bridge_or_network):
+            return bridge_or_network
+        # Slow path: treat as VMware network name → translate via bridge_map
+        bridge = self.config.bridge_for_network(bridge_or_network)
         if not self.proxmox.bridge_exists(bridge):
             known = ", ".join(sorted(item.name for item in self.proxmox.list_bridges()))
-            raise ProxmoxClientError(f"Bridge '{bridge}' is not present on Proxmox. Known bridges: {known}")
+            raise ProxmoxClientError(
+                f"Bridge '{bridge}' (resolved from '{bridge_or_network}') is not present on Proxmox. "
+                f"Known bridges: {known}"
+            )
         return bridge
 
     def _resolve_storage(self, preferred: Optional[str] = None) -> str:
