@@ -280,7 +280,7 @@
         <span class="help">If the VMX is missing values, fill them here before launching the job.</span>
         <div class="grid grid-cols-4 gap-8 mt-8">
           <input type="number" id="wz_hw_memory" class="form-input" min="16" value="1024" placeholder="Memory MB"
-                 oninput="syncVmxHardwareOverrides()" />
+                 oninput="this.dataset.vmxAutofilled='false'; syncVmxHardwareOverrides()" />
           <input type="number" id="wz_hw_cpu" class="form-input" min="1" placeholder="vCPUs"
                  oninput="syncVmxHardwareOverrides()" />
           <select id="wz_hw_firmware" class="form-select" onchange="syncVmxHardwareOverrides()">
@@ -986,9 +986,10 @@ async function discoverProxmox() {
     if (state.bridge)  document.getElementById('wz_bridge_text').value  = state.bridge;
 
     // Build per-disk and per-NIC assignment rows
-    buildPerDiskRows(d.storages);
-    buildDatastoreMappingRows(d.storages);
-    buildPerNicRows(d.bridges);
+    buildPerDiskRows(d.storages || []);
+    buildDatastoreMappingRows(d.storages || []);
+    buildPerNicRows(d.bridges || []);
+    buildRdmRows();
 
     result.innerHTML = renderInventoryTables(d);
   } catch(e) {
@@ -1095,7 +1096,10 @@ function applyVmxSpecs(specs) {
   const cpuEl = document.getElementById('wz_hw_cpu');
   const fwEl = document.getElementById('wz_hw_firmware');
   const osEl = document.getElementById('wz_hw_guest_os');
-  if (memEl && !memEl.value && specs.memory_mb) memEl.value = specs.memory_mb;
+  if (memEl && specs.memory_mb && memEl.dataset.vmxAutofilled !== 'false' && (!memEl.value || memEl.value === '1024')) {
+    memEl.value = specs.memory_mb;
+    memEl.dataset.vmxAutofilled = 'true';
+  }
   if (cpuEl && !cpuEl.value && specs.cpu_count) cpuEl.value = specs.cpu_count;
   if (fwEl && !fwEl.value && specs.firmware) fwEl.value = specs.firmware;
   if (osEl && !osEl.value && specs.guest_os) osEl.value = specs.guest_os;
@@ -1120,13 +1124,9 @@ function applyVmxSpecs(specs) {
   // Sync the new values to state
   syncVmxHardwareOverrides();
   updateSummary();
-  if (state._discoveredStorages.length) {
-    buildDatastoreMappingRows(state._discoveredStorages);
-    buildPerDiskRows(state._discoveredStorages);
-  }
-  if (state._discoveredBridges.length) {
-    buildPerNicRows(state._discoveredBridges);
-  }
+  buildDatastoreMappingRows(state._discoveredStorages || []);
+  buildPerDiskRows(state._discoveredStorages || []);
+  buildPerNicRows(state._discoveredBridges || []);
   buildRdmRows();
   // Show hardware hint banner
   const box = document.getElementById('scan-status');
@@ -1326,6 +1326,7 @@ function submitJob() {
   document.getElementById('f_allow_disk_shrink').value = state.allow_disk_shrink ? 'on' : '';
   document.getElementById('f_fallback_nic_bridge').value = state.fallback_nic_bridge || '';
   const mergedVmxSpecs = Object.assign({}, state.vmx_specs || {}, state.vmx_overrides || {});
+  mergedVmxSpecs.vmx_overrides = Object.assign({}, state.vmx_overrides || {});
   document.getElementById('f_vmx_specs').value         = JSON.stringify(mergedVmxSpecs);
   document.getElementById('f_proxmox_host_id').value  = state.proxmox_host_id || '';
   document.getElementById('f_vmware_host_id').value   = state.vmware_host_id  || '';

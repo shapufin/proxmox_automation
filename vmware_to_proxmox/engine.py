@@ -1076,6 +1076,23 @@ class MigrationEngine:
         
         # Apply vmx_overrides (user-specified advanced specs from wizard)
         overrides = specs.get("vmx_overrides", {})
+        if not isinstance(overrides, dict) or not overrides:
+            overrides = {
+                key: specs.get(key)
+                for key in (
+                    "memory_mb",
+                    "cpu_count",
+                    "firmware",
+                    "guest_os",
+                    "cpu_hotplug_enabled",
+                    "memory_hotplug_enabled",
+                    "scsi_controller_type",
+                    "guest_os_full_name",
+                    "description",
+                    "nic_model_default",
+                )
+                if specs.get(key) is not None and specs.get(key) != ""
+            }
         if isinstance(overrides, dict):
             # Hardware overrides
             if overrides.get("memory_mb"):
