@@ -946,6 +946,20 @@ class MigrationEngine:
             has_pci_passthrough=False,
         )
 
+    @staticmethod
+    def _synthetic_disk_specs_from_paths(disk_paths: Iterable[Path]) -> list[VmwareDiskSpec]:
+        disks: list[VmwareDiskSpec] = []
+        for index, disk_path in enumerate(disk_paths):
+            disks.append(
+                VmwareDiskSpec(
+                    label=f"Hard disk {index + 1}",
+                    file_name=str(disk_path),
+                    capacity_bytes=0,
+                    backing_type="file",
+                )
+            )
+        return disks
+
     def _vm_from_manifest(self, manifest_path: Optional[Path], vmx_specs: Optional[dict] = None, fallback_name: str = "") -> VmwareVmSpec:
         """Load VM spec from manifest_path. Falls back to a minimal spec if file is absent."""
         if manifest_path is None or not str(manifest_path) or not manifest_path.exists() or manifest_path.is_dir():
@@ -1282,6 +1296,13 @@ class MigrationEngine:
         vm = self._vm_from_manifest(manifest_path, vmx_specs=vmx_specs, fallback_name=vm_name)
         if vm_name and vm.name != vm_name:
             vm.name = vm_name
+        synthesized_disk_warning = ""
+        if not vm.disks and disk_paths:
+            vm.disks = self._synthetic_disk_specs_from_paths(disk_paths)
+            synthesized_disk_warning = (
+                "No manifest or VMX disk metadata was available; "
+                "synthesized minimal disk specs from the provided local source paths"
+            )
         compatibility = self._build_compatibility_report(
             vm,
             source_mode="local",
@@ -1292,6 +1313,8 @@ class MigrationEngine:
             fallback_nic_bridge=fallback_nic_bridge,
         )
         warnings = list(dict.fromkeys((compatibility.get("warnings") or []) + (compatibility.get("recommendations") or [])))
+        if synthesized_disk_warning:
+            warnings = [synthesized_disk_warning, *warnings]
 
         ledger = self.reconcile(migration_ledger)
         if persist_ledger is not None:
@@ -1322,6 +1345,17 @@ class MigrationEngine:
                 "No local disk paths were supplied or discovered for %s; diagnostics=%s",
                 vm.name,
                 path_diagnostics,
+            )
+
+        if not vm.name and source_paths:
+            vm.name = source_paths[0].stem or vm_name or "vm"
+
+        if not vm.disks and source_paths:
+            vm.disks = self._synthetic_disk_specs_from_paths(source_paths)
+            self.logger.warning(
+                "No disk metadata was available for %s; synthesized %s disk spec(s) from local source paths",
+                vm.name,
+                len(vm.disks),
             )
 
         if dry_run:

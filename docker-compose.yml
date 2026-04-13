@@ -93,7 +93,7 @@ services:
         python manage.py createcachetable &&
         if [ \"$${AUTO_REGISTER:-false}\" = \"true\" ]; then
           echo 'Running register_host...' &&
-          python manage.py register_host || echo 'WARNING: register_host failed, continuing.';
+          python manage.py register_host --skip-if-exists || echo 'WARNING: register_host failed, continuing.';
         fi &&
         echo 'Init completed successfully'
       "

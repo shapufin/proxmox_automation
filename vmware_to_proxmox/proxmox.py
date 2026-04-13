@@ -48,6 +48,22 @@ def _normalize_volume_id(volume_id: str) -> str:
     return cleaned
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled", "active"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "inactive"}:
+            return False
+    return bool(value)
+
+
 class ProxmoxClient:
     def __init__(
         self,
@@ -294,8 +310,8 @@ class ProxmoxClient:
                     total=int(row.get("total", 0) or 0),
                     used=int(row.get("used", 0) or 0),
                     available=int(row.get("avail", row.get("available", 0)) or 0),
-                    shared=bool(row.get("shared", False)),
-                    active=str(row.get("status", "active")) == "active",
+                    shared=_coerce_bool(row.get("shared", False), False),
+                    active=_coerce_bool(row.get("active", row.get("status", True)), True),
                 )
             )
         return storages
@@ -340,30 +356,40 @@ class ProxmoxClient:
         api = self._api_client()
         if api is not None:
             try:
-                # First try to get SDN VNets
-                bridges = []
-                try:
-                    sdn_data = api.cluster.sdn.vnets.get()
-                    log.info(f"Found {len(sdn_data)} SDN VNets")
-                    for vnet in sdn_data:
-                        if isinstance(vnet, dict):
-                            bridges.append(
-                                ProxmoxBridgeSpec(
-                                    name=str(vnet.get("vnet", "")),
-                                    active=bool(vnet.get("active", False)),
-                                    vlan_aware=False,  # VNets handle VLANs differently
-                                    bridge_ports=str(vnet.get("tag", "")),  # Store VLAN tag here
-                                    comments=f"SDN VNet - Type: {vnet.get('type', 'unknown')}",
-                                )
-                            )
-                except Exception as sdn_exc:
-                    log.debug(f"SDN VNets not available (likely not enabled): {sdn_exc}")
-                
-                # Then get standard network interfaces using actual node name
+                bridges: list[ProxmoxBridgeSpec] = []
+
+                # First get standard network interfaces using actual node name
                 actual_node = self._get_actual_node_name(api)
                 net_data = api.nodes(actual_node).network.get()
                 standard_bridges = self._parse_bridges(self._normalise_network_data(net_data))
                 bridges.extend(standard_bridges)
+
+                # If standard discovery did not surface SDN VNets, query the REST API directly.
+                if not any(bridge.comments.startswith("SDN VNet") for bridge in bridges):
+                    sdn_data: Any = []
+                    try:
+                        sdn_data = api.get("/cluster/sdn/vnets")
+                    except Exception:
+                        try:
+                            sdn_data = api.cluster.sdn.vnets.get()
+                        except Exception as sdn_exc:
+                            log.debug(f"SDN VNets not available (likely not enabled): {sdn_exc}")
+                            sdn_data = []
+
+                    sdn_rows = self._normalise_network_data(sdn_data)
+                    if sdn_rows:
+                        log.info(f"Found {len(sdn_rows)} SDN VNets")
+                        for vnet in sdn_rows:
+                            if isinstance(vnet, dict):
+                                bridges.append(
+                                    ProxmoxBridgeSpec(
+                                        name=str(vnet.get("vnet", vnet.get("name", ""))),
+                                        active=_coerce_bool(vnet.get("active", vnet.get("enabled", False)), False),
+                                        vlan_aware=_coerce_bool(vnet.get("vlan_aware", vnet.get("tagged", False)), False),
+                                        bridge_ports=str(vnet.get("tag", vnet.get("zone", ""))),
+                                        comments=f"SDN VNet - Type: {vnet.get('type', 'unknown')}",
+                                    )
+                                )
                 
                 log.info(f"Total bridges found: {len(bridges)} (SDN + standard)")
                 return bridges
@@ -415,8 +441,8 @@ class ProxmoxClient:
             bridges.append(
                 ProxmoxBridgeSpec(
                     name=iface,
-                    active=bool(row.get("active", False)),
-                    vlan_aware=bool(int(row.get("vlan_aware", 0) or 0)),
+                    active=_coerce_bool(row.get("active", False), False),
+                    vlan_aware=_coerce_bool(row.get("vlan_aware", 0), False),
                     bridge_ports=str(row.get("bridge_ports", "") or ""),
                     comments=str(row.get("comments", "") or ""),
                 )

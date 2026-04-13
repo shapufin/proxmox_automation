@@ -18,6 +18,8 @@ The primary operator experience is now a **Dockerized Django GUI** that can run 
   - `/etc/fstab` UUID normalization
 - Supports **single** VM or **batch** migration.
 
+**Detailed migration flow**: See [MIGRATION_FLOW.md](MIGRATION_FLOW.md) for step-by-step logic from VMware disk export to Proxmox guest remediation, including stage-based checkpointing, rollback procedures, and error handling strategies.
+
 ## Important limitations
 
 This tool is designed for **Linux guests only**.

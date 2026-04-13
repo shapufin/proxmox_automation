@@ -165,6 +165,14 @@ def execute_job(job: MigrationJob) -> MigrationJob:
         job.save(update_fields=["migration_ledger", "updated_at"])
 
     vm_name = job.vm_name.strip()
+    if not vm_name and job.mode == MigrationMode.LOCAL:
+        for raw_source_path in job.source_paths or []:
+            candidate = Path(str(raw_source_path)).expanduser().stem.strip()
+            if candidate:
+                vm_name = candidate
+                break
+    if not vm_name:
+        vm_name = job.name.strip()
     storage = job.storage or None
     bridge = job.bridge or None
     disk_format = DiskFormat(job.disk_format) if job.disk_format else None

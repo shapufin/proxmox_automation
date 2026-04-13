@@ -103,6 +103,12 @@ class MigrationJobForm(forms.Form):
         if mode == MigrationMode.LOCAL:
             if not source_paths:
                 self.add_error("source_paths", "Select at least one local disk file.")
+            elif not vm_name:
+                first_source = str(source_paths[0]).strip()
+                if first_source:
+                    vm_name = Path(first_source).stem.strip()
+                    if vm_name:
+                        cleaned["vm_name"] = vm_name
         else:
             if not vm_name:
                 self.add_error("vm_name", "A VMware VM name is required for direct migrations.")
