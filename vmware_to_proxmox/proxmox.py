@@ -527,6 +527,9 @@ class ProxmoxClient:
         hotplug_memory: bool = False,
     ) -> str:
         safe_name = _sanitize_vm_name(name, fallback=f"vm-{vmid}")
+        safe_memory_mb = int(memory_mb or 0)
+        if safe_memory_mb < 16:
+            safe_memory_mb = 1024
         args = [
             "qm",
             "create",
@@ -534,7 +537,7 @@ class ProxmoxClient:
             "--name",
             safe_name,
             "--memory",
-            str(memory_mb),
+            str(safe_memory_mb),
             "--cores",
             str(cores),
             "--sockets",

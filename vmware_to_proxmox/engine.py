@@ -935,7 +935,7 @@ class MigrationEngine:
             guest_id=str(specs.get("guest_os", "")),
             power_state="poweredOff",
             firmware=str(specs.get("firmware", "bios")),
-            memory_mb=int(specs.get("memory_mb", 0) or 0),
+            memory_mb=int(specs.get("memory_mb", 1024) or 1024),
             cpu_count=int(specs.get("cpu_count", 1) or 1),
             annotation="",
             datastore="",

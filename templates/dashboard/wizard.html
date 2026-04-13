@@ -272,7 +272,7 @@
         <label>Hardware overrides from VMX</label>
         <span class="help">If the VMX is missing values, fill them here before launching the job.</span>
         <div class="grid grid-cols-4 gap-8 mt-8">
-          <input type="number" id="wz_hw_memory" class="form-input" min="1" placeholder="Memory MB"
+          <input type="number" id="wz_hw_memory" class="form-input" min="16" value="1024" placeholder="Memory MB"
                  oninput="syncVmxHardwareOverrides()" />
           <input type="number" id="wz_hw_cpu" class="form-input" min="1" placeholder="vCPUs"
                  oninput="syncVmxHardwareOverrides()" />
