@@ -968,13 +968,17 @@ class MigrationEngine:
             firmware=str(specs.get("firmware", "bios")),
             memory_mb=int(specs.get("memory_mb", 1024) or 1024),
             cpu_count=int(specs.get("cpu_count", 1) or 1),
-            annotation="",
+            annotation=str(specs.get("annotation", specs.get("description", ""))),
             datastore="",
             disks=disks,
             nics=nics,
             has_snapshots=False,
             has_vtpm=False,
             has_pci_passthrough=False,
+            cpu_hotplug_enabled=bool(specs.get("cpu_hotplug_enabled", False)),
+            memory_hotplug_enabled=bool(specs.get("memory_hotplug_enabled", False)),
+            scsi_controller_type=str(specs.get("scsi_controller_type", "")),
+            guest_os_full_name=str(specs.get("guest_os_full_name", "")),
         )
 
     @staticmethod

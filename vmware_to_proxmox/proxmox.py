@@ -398,17 +398,43 @@ class ProxmoxClient:
         
         # CLI fallback: same rule — never use "-format=json" (triggers PVE 7/8 boolean parse error).
         actual_node = self._get_actual_node_name(api) if api else self.node
+        bridges: list[ProxmoxBridgeSpec] = []
         try:
             # PVE 7+ --output-format as a separate token
             proc = self._run(["pvesh", "get", f"/nodes/{actual_node}/network", "--output-format", "json"])
             raw = json.loads(proc.stdout or "[]")
-            return self._parse_bridges(self._normalise_network_data(raw))
+            bridges = self._parse_bridges(self._normalise_network_data(raw))
         except ProxmoxClientError as exc:
             _exc_str = str(exc)
             if "Unknown option" in _exc_str or "unable to parse" in _exc_str or "400" in _exc_str:
                 log.warning("pvesh --output-format not supported for network, falling back to ip link show: %s", exc)
-                return self._parse_bridges_text(self._run(["ip", "link", "show"]))
-            raise
+                bridges = self._parse_bridges_text(self._run(["ip", "link", "show"]))
+            else:
+                raise
+
+        # SDN VNet CLI fallback: query /cluster/sdn/vnets when API was unavailable
+        if not any(bridge.comments.startswith("SDN VNet") for bridge in bridges):
+            try:
+                sdn_proc = self._run(["pvesh", "get", "/cluster/sdn/vnets", "--output-format", "json"], check=False)
+                if sdn_proc.returncode == 0 and sdn_proc.stdout:
+                    sdn_rows = self._normalise_network_data(json.loads(sdn_proc.stdout))
+                    for vnet in sdn_rows:
+                        if isinstance(vnet, dict):
+                            bridges.append(
+                                ProxmoxBridgeSpec(
+                                    name=str(vnet.get("vnet", vnet.get("name", ""))),
+                                    active=_coerce_bool(vnet.get("active", vnet.get("enabled", False)), False),
+                                    vlan_aware=_coerce_bool(vnet.get("vlan_aware", vnet.get("tagged", False)), False),
+                                    bridge_ports=str(vnet.get("tag", vnet.get("zone", ""))),
+                                    comments=f"SDN VNet - Type: {vnet.get('type', 'unknown')}",
+                                )
+                            )
+                    if sdn_rows:
+                        log.info("CLI fallback: found %d SDN VNets", len(sdn_rows))
+            except Exception as sdn_exc:  # noqa: BLE001
+                log.debug("SDN VNets not available via CLI (likely not enabled): %s", sdn_exc)
+
+        return bridges
 
     @staticmethod
     def _normalise_network_data(data: Any) -> list[dict[str, Any]]:
@@ -555,10 +581,13 @@ class ProxmoxClient:
             args.extend(["--bios", "ovmf"])
         if agent:
             args.extend(["--agent", "enabled=1"])
+        hotplug_features: list[str] = []
         if hotplug_cpu:
-            args.extend(["--hotplug", "cpu"])
+            hotplug_features.append("cpu")
         if hotplug_memory:
-            args.extend(["--hotplug", "memory"])
+            hotplug_features.append("memory")
+        if hotplug_features:
+            args.extend(["--hotplug", ",".join(hotplug_features)])
         self._run(args)
         return safe_name
 
@@ -573,11 +602,19 @@ class ProxmoxClient:
         self._run(args)
 
     def import_disk(self, vmid: int, image_path: Path, storage: str, disk_format: DiskFormat) -> str:
+        # Enforce absolute host-path: qm importdisk resolves paths on the HOST,
+        # so a relative path would silently point to the wrong file.
+        abs_path = str(image_path)
+        if not abs_path.startswith("/") and not abs_path.startswith("\\\\"):
+            raise ProxmoxClientError(
+                f"import_disk requires an absolute host-path, got: {abs_path!r}. "
+                "Ensure the disk path is HOST-absolute (e.g. /mnt/staging/vm.vmdk)."
+            )
         proc = self._run([
             "qm",
             "importdisk",
             str(vmid),
-            str(image_path),
+            abs_path,
             storage,
             "--format",
             disk_format.value,

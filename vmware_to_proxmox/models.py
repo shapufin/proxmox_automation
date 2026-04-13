@@ -65,6 +65,10 @@ class VmwareVmSpec:
     snapshot_count: int = 0
     has_vtpm: bool = False
     has_pci_passthrough: bool = False
+    cpu_hotplug_enabled: bool = False
+    memory_hotplug_enabled: bool = False
+    scsi_controller_type: str = ""
+    guest_os_full_name: str = ""
 
     @property
     def is_linux(self) -> bool:

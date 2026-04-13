@@ -238,10 +238,10 @@ def _parse_json_field(raw: str) -> dict[str, Any]:
         parsed = json.loads(raw or "{}")
         if not isinstance(parsed, dict):
             return {}
-        # Validate keys and values are strings (for datastore_map, disk_storage_map, etc.)
-        validated = {}
+        # Preserve values as-is so numeric/bool VMX overrides and resize targets survive parsing.
+        validated: dict[str, Any] = {}
         for key, val in parsed.items():
-            if isinstance(key, str) and isinstance(val, str):
+            if isinstance(key, str):
                 validated[key] = val
         return validated
     except Exception:  # noqa: BLE001
