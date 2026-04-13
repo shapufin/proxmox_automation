@@ -746,6 +746,32 @@ class MigrationEngine:
                 "Review whether virtio-only mapping is acceptable for this VM",
             )
 
+        rdm_disks = [disk for disk in vm.disks if getattr(disk, "is_rdm", False)]
+        if rdm_disks:
+            labels: list[str] = []
+            for idx, disk in enumerate(rdm_disks):
+                bits = [getattr(disk, "label", "") or getattr(disk, "file_name", "") or f"disk-{idx}"]
+                if getattr(disk, "lun_id", None) not in (None, ""):
+                    bits.append(f"LUN {getattr(disk, 'lun_id')}")
+                labels.append(" / ".join(bit for bit in bits if bit))
+            label_text = ", ".join(labels)
+            msg = "Raw LUN / RDM disks detected; automatic import is not supported in the VMDK migration path"
+            warnings.append(msg)
+            blocking_issues.append(msg)
+            recommendations.append("Handle RDM/LUN devices separately using a dedicated Proxmox passthrough strategy or migrate them manually")
+            add_finding(
+                "blocker",
+                "rdm_lun",
+                msg,
+                "Use a dedicated Proxmox passthrough strategy or migrate the LUNs manually",
+            )
+            add_finding(
+                "warning",
+                "rdm_lun",
+                f"Detected RDM/LUN disks: {label_text}",
+                "Review each LUN and decide whether it should be recreated, passed through, or excluded",
+            )
+
         # Derived summary.
         can_proceed = not blocking_issues
         summary = "Compatible with warnings" if warnings and can_proceed else ("Blocked" if blocking_issues else "Compatible")
@@ -921,6 +947,11 @@ class MigrationEngine:
                     controller_key=int(disk.get("controller", 0) or 0),
                     unit_number=int(disk.get("unit_number", 0) or 0),
                     thin_provisioned=bool(disk.get("thin_provisioned", False)),
+                    datastore=str(disk.get("datastore", "")),
+                    backing_mode=str(disk.get("backing_mode", "")),
+                    device_type=str(disk.get("device_type", "")),
+                    lun_id=disk.get("lun_id"),
+                    is_rdm=bool(disk.get("is_rdm", False)),
                 ))
         if not disks:
             for idx, fname in enumerate(specs.get("disk_files", [])):
@@ -1033,6 +1064,11 @@ class MigrationEngine:
                     controller_key=int(disk.get("controller", 0) or 0),
                     unit_number=int(disk.get("unit_number", 0) or 0),
                     thin_provisioned=bool(disk.get("thin_provisioned", False)),
+                    datastore=str(disk.get("datastore", "")),
+                    backing_mode=str(disk.get("backing_mode", "")),
+                    device_type=str(disk.get("device_type", "")),
+                    lun_id=disk.get("lun_id"),
+                    is_rdm=bool(disk.get("is_rdm", False)),
                 )
                 for idx, disk in enumerate(specs.get("disks", []))
                 if isinstance(disk, dict)

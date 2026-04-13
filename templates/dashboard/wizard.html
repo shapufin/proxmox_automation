@@ -216,6 +216,13 @@
         <div id="disk-storage-rows"></div>
       </div>
 
+      {# ── RDM / LUN devices ── #}
+      <div id="rdm-devices" class="wz-hidden wz-stack-gap">
+        <div class="wz-section-title">RDM / LUN Devices</div>
+        <div class="help">Detected from VMX disk metadata. These devices are shown separately because automatic VMDK import does not handle raw LUN passthrough.</div>
+        <div id="rdm-device-rows"></div>
+      </div>
+
       {# ── Datastore mapping (VMware datastore → Proxmox storage) ── #}
       <div id="datastore-mapping" class="wz-hidden wz-stack-gap">
         <div class="wz-section-title">Datastore Mapping (VMware → Proxmox)</div>
@@ -751,6 +758,41 @@ function buildPerNicRows(bridges) {
   });
 }
 
+function buildRdmRows() {
+  const rdms = (state.vmx_disk_specs || []).filter(disk => disk && disk.is_rdm);
+  const section = document.getElementById('rdm-devices');
+  const rows = document.getElementById('rdm-device-rows');
+  if (!section || !rows) return;
+
+  if (!rdms.length) {
+    section.style.display = 'none';
+    rows.innerHTML = '';
+    return;
+  }
+
+  section.style.display = '';
+  rows.innerHTML = '';
+
+  rdms.forEach((disk, i) => {
+    const row = document.createElement('div');
+    row.className = 'wz-disk-row';
+
+    const name = disk.label || disk.file_name || `RDM ${i + 1}`;
+    const details = [];
+    if (disk.datastore) details.push(`datastore: ${disk.datastore}`);
+    if (disk.device_type) details.push(`device: ${disk.device_type}`);
+    if (disk.backing_mode) details.push(`mode: ${disk.backing_mode}`);
+    if (disk.lun_id !== null && disk.lun_id !== undefined && disk.lun_id !== '') details.push(`LUN: ${disk.lun_id}`);
+    if (disk.controller_type !== undefined || disk.controller !== undefined) details.push(`controller: ${disk.controller_type || 'scsi'}${disk.controller !== undefined ? disk.controller : ''}`);
+
+    row.innerHTML = `
+      <span class="wz-disk-name">🧱 ${esc(name)}<div class="wz-disk-meta">${esc(details.join(' · ') || 'RDM / LUN device detected')}</div></span>
+      <div class="wz-file-msg wz-file-msg-warning" style="margin:0;flex:1">This device is detected for review only. Proxmox cannot automatically import raw LUN/RDM state with the normal disk-import path.</div>
+    `;
+    rows.appendChild(row);
+  });
+}
+
 function buildDatastoreMappingRows(storages) {
   // Extract unique datastores from VMX disk specs
   const datastores = new Set();
@@ -1008,7 +1050,7 @@ async function scanVmdks() {
     }
 
     // ── Auto-fill hardware from .vmx ──
-    if (d.vmx_specs && d.vmx_specs.name) {
+    if (d.vmx_specs && Object.keys(d.vmx_specs).length) {
       applyVmxSpecs(d.vmx_specs);
     }
 
@@ -1041,12 +1083,14 @@ function applyVmxSpecs(specs) {
     document.getElementById('wz_name').value = specs.name;
     syncField('name', specs.name);
   }
+
   // Store extras in state for the summary card
   state._vmxMemoryMb  = specs.memory_mb  || 0;
   state._vmxCpuCount  = specs.cpu_count  || 1;
   state._vmxFirmware  = specs.firmware   || 'bios';
   state._vmxGuestOs   = specs.guest_os   || '';
   state._vmxNetworks  = specs.networks   || [];
+
   const memEl = document.getElementById('wz_hw_memory');
   const cpuEl = document.getElementById('wz_hw_cpu');
   const fwEl = document.getElementById('wz_hw_firmware');
@@ -1075,14 +1119,15 @@ function applyVmxSpecs(specs) {
 
   // Sync the new values to state
   syncVmxHardwareOverrides();
-  syncVmxHardwareOverrides();
   updateSummary();
   if (state._discoveredStorages.length) {
+    buildDatastoreMappingRows(state._discoveredStorages);
     buildPerDiskRows(state._discoveredStorages);
   }
   if (state._discoveredBridges.length) {
     buildPerNicRows(state._discoveredBridges);
   }
+  buildRdmRows();
   // Show hardware hint banner
   const box = document.getElementById('scan-status');
   const existingHint = document.getElementById('vmx-hint');
