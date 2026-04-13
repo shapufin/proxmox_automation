@@ -1323,7 +1323,7 @@ class MigrationEngine:
         ledger_vmid = self._stage_artifacts(ledger, "vm_created").get("vmid")
         if ledger_vmid not in (None, ""):
             vmid = int(ledger_vmid)
-        else:
+        elif not dry_run:
             vmid = vmid or self.proxmox.next_vmid()
         target_storage = self._resolve_storage(storage)
         target_format = disk_format or self.config.target_format()
